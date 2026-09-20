@@ -170,6 +170,9 @@ class RoomPlayer:
         offset_ms = int(params.get("offset") or 0)
 
         async with self._lock:
+            # Settle how this server is reached before anything is fetched from
+            # it: the answer decides the URLs the speaker will be given too.
+            server = await self._plex.route(server)
             self.server = server
             self.queue = await self._plex.play_queue(
                 server, container_key or item_key, self.machine_identifier

@@ -82,8 +82,17 @@ class PortAllocator:
     def port_for(self, uid: str) -> int:
         if uid in self._ports:
             return self._ports[uid]
-        taken = set(self._ports.values())
-        port = self.base
+        return self.reassign(uid)
+
+    def reassign(self, uid: str, after: int = 0) -> int:
+        """Give *uid* the lowest free port above *after*.
+
+        Needed because this can only avoid the ports it handed out itself -
+        anything else on the host holding one is discovered by the bind
+        failing, and the room then moves rather than being lost.
+        """
+        taken = {port for held, port in self._ports.items() if held != uid}
+        port = max(self.base, after + 1)
         while port in taken:
             port += 1
         self._ports[uid] = port
@@ -136,7 +145,9 @@ class Bridge:
         connector = aiohttp.TCPConnector(limit=64, force_close=True, enable_cleanup_closed=True)
         self._session = aiohttp.ClientSession(connector=connector)
         self.account = PlexAccount(self.identity, self._session)
-        self.plex = PlexClient(self._session, self.config.http_timeout)
+        self.plex = PlexClient(
+            self._session, self.config.http_timeout, self.config.verify_ssl
+        )
 
         soap_client = SoapClient(self._session, self.config.http_timeout)
         self._topology = TopologyManager(
@@ -273,29 +284,65 @@ class Bridge:
         )
         subscribers = TimelineSubscribers(self._session)
 
-        runner = web.AppRunner(create_player_app(player, subscribers), access_log=None)
-        try:
-            await runner.setup()
-            await web.TCPSite(runner, "0.0.0.0", port).start()
-        except OSError as exc:
-            LOGGER.error(
-                "Could not give %s a player on port %d (%s); the room is skipped",
-                zone.name,
-                port,
-                exc,
-            )
-            with contextlib.suppress(Exception):
-                await runner.cleanup()
+        runner = await self._listen(player, subscribers)
+        if runner is None:
             return
 
         self.players[zone.uid] = player
         self._sites[zone.uid] = runner
         self._subs[zone.uid] = subscribers
-        LOGGER.info("Publishing %s as a Plex player on port %d", player.name, port)
+        LOGGER.info("Publishing %s as a Plex player on port %d", player.name, player.port)
 
         with contextlib.suppress(Exception):
             await player.refresh()
         await self._publish_room(player)
+
+    #: How many ports to try before giving up on a room.  A handful of
+    #: neighbouring ports being busy is possible; a hundred is a misconfiguration
+    #: worth reporting rather than silently working around.
+    PORT_ATTEMPTS = 20
+
+    async def _listen(self, player: RoomPlayer, subscribers) -> web.AppRunner | None:
+        """Bring up a room's player, moving it along if its port is taken.
+
+        Something else on the host holding a port is not a reason to lose a
+        room - the port is an implementation detail, and the next one does just
+        as well.
+        """
+        for _attempt in range(self.PORT_ATTEMPTS):
+            runner = web.AppRunner(create_player_app(player, subscribers), access_log=None)
+            try:
+                await runner.setup()
+                await web.TCPSite(runner, "0.0.0.0", player.port).start()
+                return runner
+            except OSError as exc:
+                with contextlib.suppress(Exception):
+                    await runner.cleanup()
+                if getattr(exc, "errno", None) not in (48, 98):  # EADDRINUSE
+                    LOGGER.error(
+                        "Could not give %s a player on port %d (%s); the room is "
+                        "skipped",
+                        player.zone.name,
+                        player.port,
+                        exc,
+                    )
+                    return None
+                moved = self._ports.reassign(player.zone.uid, after=player.port)
+                LOGGER.info(
+                    "Port %d is already in use on this host; moving %s to %d",
+                    player.port,
+                    player.zone.name,
+                    moved,
+                )
+                player.port = moved
+        LOGGER.error(
+            "Could not find a free port for %s after %d attempts; the room is "
+            "skipped. Check what else on this host is using ports from %d up.",
+            player.zone.name,
+            self.PORT_ATTEMPTS,
+            self.config.player_port_base,
+        )
+        return None
 
     def _sync_zone_data(self) -> None:
         """Push refreshed topology (address, name, grouping) into live players."""

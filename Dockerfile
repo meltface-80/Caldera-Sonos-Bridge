@@ -13,6 +13,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# A Plex server on your own network is reached over plain HTTP, but a server
+# that insists on secure connections is reached over TLS against a real
+# certificate - which needs a trust store to check it against.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

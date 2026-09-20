@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import quote, urlencode
 
 import aiohttp
@@ -44,6 +44,27 @@ def _int(value: str | None, default: int = 0) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+#: ``192-168-0-57.<32 hex>.plex.direct`` - the hostname Plex hands out for a
+#: server on your own network.  It resolves to the address written into its
+#: first label, and exists so that a browser can reach a private address over a
+#: certificate that publicly validates.
+PLEX_DIRECT = re.compile(
+    r"^(?P<host>\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})\.[0-9a-f]{16,}\.plex\.direct$",
+    re.IGNORECASE,
+)
+
+
+def lan_address(host: str) -> str:
+    """The LAN address a ``plex.direct`` hostname encodes, or ``""``."""
+    match = PLEX_DIRECT.match((host or "").strip())
+    if not match:
+        return ""
+    octets = match.group("host").split("-")
+    if any(not octet.isdigit() or int(octet) > 255 for octet in octets):
+        return ""
+    return ".".join(octets)
 
 
 def _xml_headers(client_id: str = "") -> dict[str, str]:
@@ -98,6 +119,22 @@ class PlexServer:
     @property
     def usable(self) -> bool:
         return bool(self.address and self.token)
+
+    @property
+    def direct(self) -> PlexServer | None:
+        """The same server reached as plain HTTP on the local network.
+
+        A controller on your own network hands out an HTTPS ``plex.direct``
+        address, which is right for a browser and wrong for this: it costs a TLS
+        handshake the container has to be able to verify, and - the part that
+        actually matters - a Sonos player would have to verify it too, on a
+        hostname it has to resolve, for every track.  The address is written
+        into the hostname, so the plain route is simply read off it.
+        """
+        host = lan_address(self.address)
+        if not host:
+            return None
+        return replace(self, address=host, protocol="http")
 
     def url(self, path: str, /, **params: object) -> str:
         """An absolute URL on this server, carrying the access token.
@@ -271,17 +308,72 @@ def _parse_track(node) -> PlexTrack:
 class PlexClient:
     """Fetches from a Plex Media Server, and reports playback back to it."""
 
-    def __init__(self, session: aiohttp.ClientSession, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        timeout: float = 10.0,
+        verify_ssl: bool = True,
+    ) -> None:
         self._session = session
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        # None leaves aiohttp's own verification in place; False turns it off,
+        # and only for the media server - plex.tv stays verified either way.
+        self._ssl = None if verify_ssl else False
+        self._routes: dict[str, PlexServer] = {}
         #: Why the last request failed, for the settings page to show.
         self.last_error = ""
+
+    async def route(self, server: PlexServer) -> PlexServer:
+        """Pick how to reach *server*, preferring the plain route on the LAN.
+
+        Decided once per server and remembered, because it is a property of the
+        network rather than of a track.  The HTTPS address the controller gave
+        is kept as the fallback, for a server that insists on secure
+        connections.
+        """
+        if not server.usable:
+            return server
+        direct = server.direct
+        if direct is None:
+            return server
+
+        cached = self._routes.get(server.base_url)
+        if cached is not None:
+            return replace(cached, token=server.token)
+
+        chosen = direct if await self.reachable(direct) else server
+        if chosen is direct:
+            LOGGER.info("Reaching Plex directly at %s", chosen.base_url)
+        else:
+            LOGGER.warning(
+                "Plex would not answer plain HTTP at %s, so %s is used instead. "
+                "Sonos has to fetch every track over that same HTTPS address; if "
+                "playback fails, set Settings > Network > Secure connections to "
+                "'Preferred' on your Plex server.",
+                direct.base_url,
+                server.base_url,
+            )
+        self._routes[server.base_url] = chosen
+        return chosen
+
+    async def reachable(self, server: PlexServer) -> bool:
+        """Does this server answer at all?  ``/identity`` needs no token."""
+        try:
+            async with self._session.get(
+                server.url("/identity"),
+                ssl=self._ssl,
+                timeout=aiohttp.ClientTimeout(total=5.0),
+            ) as response:
+                return response.status < 500
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+            LOGGER.debug("Plex did not answer at %s: %s", server.base_url, exc)
+            return False
 
     async def _get(self, url: str, headers: dict[str, str] | None = None) -> str | None:
         self.last_error = ""
         try:
             async with self._session.get(
-                url, headers=headers or {}, timeout=self._timeout
+                url, headers=headers or {}, ssl=self._ssl, timeout=self._timeout
             ) as response:
                 body = await response.text()
                 if response.status != 200:
@@ -410,6 +502,7 @@ class PlexClient:
             async with self._session.get(
                 url,
                 headers={"Range": "bytes=0-1"},
+                ssl=self._ssl,
                 timeout=aiohttp.ClientTimeout(total=6.0),
             ) as response:
                 return response.status in (200, 206)

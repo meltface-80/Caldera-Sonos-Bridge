@@ -264,3 +264,95 @@ async def test_a_refused_request_is_reported(plex_client, fake_plex):
 async def test_metadata_reads_a_single_item(plex_client, fake_plex):
     queue = await plex_client.metadata(fake_plex.server(), "/library/metadata/101")
     assert queue.tracks
+
+
+# ----------------------------------------------------------------------
+# Reaching the server: plex.direct
+# ----------------------------------------------------------------------
+def test_lan_address_is_read_out_of_a_plex_direct_hostname():
+    from calderabridge.plexapi import lan_address
+
+    assert lan_address(
+        "192-168-0-57.491913271aa545628c79f9b0dfdaa645.plex.direct"
+    ) == "192.168.0.57"
+    assert lan_address("10-0-1-5.abcdef0123456789.plex.direct") == "10.0.1.5"
+
+
+def test_lan_address_declines_anything_else():
+    from calderabridge.plexapi import lan_address
+
+    assert lan_address("plex.example.com") == ""
+    assert lan_address("192.168.0.57") == ""
+    assert lan_address("") == ""
+    # An octet out of range is not an address.
+    assert lan_address("999-1-1-1.abcdef0123456789.plex.direct") == ""
+
+
+def test_the_direct_route_drops_tls_and_uses_the_lan_address():
+    server = PlexServer(
+        address="192-168-0-57.491913271aa545628c79f9b0dfdaa645.plex.direct",
+        port=32400,
+        protocol="https",
+        token="tok",
+    )
+    direct = server.direct
+    assert direct is not None
+    assert direct.base_url == "http://192.168.0.57:32400"
+    assert direct.token == "tok"
+
+
+def test_a_plain_address_has_no_direct_route():
+    assert PlexServer(address="192.168.0.57", token="tok").direct is None
+
+
+async def test_route_prefers_the_plain_lan_path(plex_client, fake_plex):
+    # The fake server answers on 127.0.0.1, which is what the hostname encodes.
+    server = PlexServer(
+        address=f"127-0-0-1.{'a' * 32}.plex.direct",
+        port=fake_plex.port,
+        protocol="https",
+        token="tok-123",
+    )
+    routed = await plex_client.route(server)
+    assert routed.protocol == "http"
+    assert routed.address == "127.0.0.1"
+
+
+async def test_route_falls_back_when_plain_http_is_refused(plex_client):
+    # Nothing listens on port 9, so the plain route cannot be used.
+    server = PlexServer(
+        address=f"127-0-0-1.{'a' * 32}.plex.direct",
+        port=9,
+        protocol="https",
+        token="tok",
+    )
+    routed = await plex_client.route(server)
+    assert routed.protocol == "https"
+
+
+async def test_route_is_decided_once_and_remembered(plex_client, fake_plex):
+    server = PlexServer(
+        address=f"127-0-0-1.{'a' * 32}.plex.direct",
+        port=fake_plex.port,
+        protocol="https",
+        token="tok-123",
+    )
+    await plex_client.route(server)
+    before = len(fake_plex.requests)
+    await plex_client.route(server)
+    # The second call probes nothing; it is a property of the network.
+    assert len(fake_plex.requests) == before
+
+
+async def test_the_stream_url_a_speaker_gets_is_plain_http(plex_client, fake_plex):
+    server = await plex_client.route(
+        PlexServer(
+            address=f"127-0-0-1.{'a' * 32}.plex.direct",
+            port=fake_plex.port,
+            protocol="https",
+            token="tok-123",
+        )
+    )
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    # Sonos would otherwise have to verify a certificate for every track.
+    assert plex_client.stream_url(server, track).startswith("http://127.0.0.1:")

@@ -131,6 +131,7 @@ class Config:
     name_suffix: str = " (Sonos)"
     stream_format: str = "original"
     max_bitrate_kbps: int = 0  # 0 = no ceiling; only applies when transcoding
+    verify_ssl: bool = True
 
     # Behaviour ------------------------------------------------------------
     mode: str = "queue"  # "queue" (gapless, via the Sonos queue) or "direct"
@@ -173,6 +174,7 @@ class Config:
             name_suffix=_str("NAME_SUFFIX", " (Sonos)"),
             stream_format=_clean_format(_str("STREAM_FORMAT", "original")),
             max_bitrate_kbps=_int("MAX_BITRATE_KBPS", 0),
+            verify_ssl=_bool("PLEX_VERIFY_SSL", True),
             mode=_clean_mode(_str("BRIDGE_MODE", "queue")),
             ungroup_on_play=_bool("UNGROUP_ON_PLAY", False),
             volume_limit=max(1, min(100, _int("VOLUME_LIMIT", 100))),
