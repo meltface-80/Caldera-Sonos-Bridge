@@ -240,3 +240,47 @@ async def test_a_setting_saved_on_the_page_survives_a_restart(bridge, tmp_path):
     fresh.config_dir = str(tmp_path)
     fresh.apply(fresh.read_settings())
     assert fresh.name_suffix == " (Plex)"
+
+
+# ----------------------------------------------------------------------
+# A port already in use
+# ----------------------------------------------------------------------
+async def test_a_room_moves_along_when_its_port_is_taken(tmp_path, household, fake_plex):
+    import socket
+
+    # Something else on the host - another service, a stray container - holds
+    # the port the first room would have used.
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("0.0.0.0", PLAYER_BASE))
+    squatter.listen(1)
+
+    config = Config(
+        bridge_ip="127.0.0.1",
+        settings_port=SETTINGS_PORT,
+        player_port_base=PLAYER_BASE,
+        config_dir=str(tmp_path),
+        static_hosts=["127.0.0.1"],
+        gdm_enabled=False,
+        discovery_interval=3600.0,
+        topology_interval=3600.0,
+        poll_interval=3600.0,
+    )
+    bridge = Bridge(config)
+    await bridge.start()
+    try:
+        # Both rooms are still published; none was lost to the clash.
+        assert len(bridge.players) == 2
+        ports = sorted(p.port for p in bridge.players.values())
+        assert PLAYER_BASE not in ports
+
+        # And each one really is listening where it says it is.
+        async with aiohttp.ClientSession() as session:
+            for player in bridge.players.values():
+                async with session.get(
+                    f"http://127.0.0.1:{player.port}/resources"
+                ) as response:
+                    assert response.status == 200
+    finally:
+        await bridge.stop()
+        squatter.close()

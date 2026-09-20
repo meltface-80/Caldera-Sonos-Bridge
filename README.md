@@ -138,6 +138,7 @@ changed on the settings page, which then takes precedence.
 | `HTTP_PORT` | `32700` | | Port for the settings page. |
 | `PLAYER_PORT_BASE` | `32600` | | First port for the per-room players. |
 | `PLEX_TOKEN` | — | | A Plex token, if you would rather supply one than link interactively. |
+| `PLEX_VERIFY_SSL` | `true` | | Check your Plex server's certificate. Only relevant when the bridge has to use HTTPS at all — see [Reaching your Plex server](#reaching-your-plex-server). Never affects plex.tv, which is always verified. |
 | `SONOS_HOSTS` | — | ● | Comma-separated player IPs, for when multicast discovery is unreliable. One is enough — the rest are read from the topology, and setting it also skips the discovery wait at start-up. |
 | `INCLUDE_ZONES` | — | ● | Publish only these rooms, e.g. `Kitchen,Study`. |
 | `EXCLUDE_ZONES` | — | ● | Publish everything except these rooms. |
@@ -168,6 +169,25 @@ docker run -d --name caldera-sonos-bridge --network host --restart unless-stoppe
 > **Bind mounts and permissions.** The bridge runs as uid `10001`, and a named volume inherits that
 > ownership automatically. If you would rather bind-mount a host directory, either
 > `chown -R 10001:10001 ./config` first or run the container with `--user "$(id -u):$(id -g)"`.
+
+## Reaching your Plex server
+
+A Plex controller hands the player an HTTPS address like
+`192-168-0-57.<hash>.plex.direct:32400`. That hostname resolves to the address written into it —
+`192.168.0.57` — and exists so a *browser* can reach a private address over a certificate that
+publicly validates.
+
+That is the wrong route here, for a reason that has nothing to do with the bridge: **your Sonos
+speaker would have to fetch every track over it**, resolving that hostname and validating that
+certificate itself, for the whole of an album. So the bridge reads the address back out of the
+hostname and uses plain HTTP on your own network instead. Nothing leaves the LAN either way, and
+the speaker gets a URL it can simply fetch.
+
+If your server has **Settings → Network → Secure connections** set to **Required**, plain HTTP is
+refused; the bridge then falls back to the HTTPS address, says so in the log, and Sonos has to cope
+with TLS on its own. Setting that to **Preferred** is the fix, and is the Plex default. If you must
+keep it on Required and the certificate cannot be verified, `PLEX_VERIFY_SSL=false` is the escape
+hatch — it applies only to your own media server, never to plex.tv.
 
 ## Formats, and what reaches the speaker
 
@@ -221,8 +241,16 @@ format rather than the plumbing.
 **Playing to one room plays everywhere.** The room is grouped in the Sonos app, and transport
 commands belong to the group coordinator. Ungroup it, or set `UNGROUP_ON_PLAY=true`.
 
+**A room's port is already in use.** The bridge moves that room to the next free port by itself and
+logs the move; nothing needs doing. If it runs out of ports it says so, and something on the host
+is holding a long run of them.
+
 **Two rooms fight over the same port.** Delete `ports.json` from the config volume and restart; the
 assignments are rebuilt.
+
+**`certificate verify failed` in the log.** The bridge was forced onto the HTTPS route — see
+[Reaching your Plex server](#reaching-your-plex-server). Set **Secure connections** to
+**Preferred** on your Plex server.
 
 ## Building and developing
 
