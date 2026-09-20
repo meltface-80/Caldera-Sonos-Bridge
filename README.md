@@ -1,3 +1,9 @@
+<div align="center">
+
+<img width="800" alt="MusicD" src="docs/IMG_8974.jpeg" />
+
+</div>
+
 # Caldera Sonos Bridge
 
 **Play your Plex music library to Sonos speakers, from Plexamp.** — v0.1.0
