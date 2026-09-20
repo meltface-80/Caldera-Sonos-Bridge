@@ -241,9 +241,16 @@ format rather than the plumbing.
 **Playing to one room plays everywhere.** The room is grouped in the Sonos app, and transport
 commands belong to the group coordinator. Ungroup it, or set `UNGROUP_ON_PLAY=true`.
 
-**A room's port is already in use.** The bridge moves that room to the next free port by itself and
-logs the move; nothing needs doing. If it runs out of ports it says so, and something on the host
-is holding a long run of them.
+**A room's port is already in use.** The bridge moves that room to the next free port by itself,
+logs the move once, and remembers the busy port for the rest of the run — nothing needs doing. To
+see what is holding it:
+
+```bash
+ss -lptn 'sport = :32600'
+```
+
+Set `PLAYER_PORT_BASE` to somewhere clear if you would rather the rooms started elsewhere. If the
+bridge runs out of ports it says so, and something on the host is holding a long run of them.
 
 **Two rooms fight over the same port.** Delete `ports.json` from the config volume and restart; the
 assignments are rebuilt.

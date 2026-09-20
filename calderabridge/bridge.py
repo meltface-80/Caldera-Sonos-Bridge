@@ -53,6 +53,11 @@ class PortAllocator:
         self.base = base
         self.path = path
         self._ports: dict[str, int] = {}
+        #: Ports something else on this host is holding.  Learned by a bind
+        #: failing, kept only for this run - whatever holds one now may well
+        #: have let go by the next start, and the rooms that matter already
+        #: have their own assignments remembered.
+        self._blocked: set[int] = set()
         self._load()
 
     def _load(self) -> None:
@@ -84,14 +89,19 @@ class PortAllocator:
             return self._ports[uid]
         return self.reassign(uid)
 
+    def block(self, port: int) -> None:
+        """Note that something else on this host holds *port*."""
+        self._blocked.add(port)
+
     def reassign(self, uid: str, after: int = 0) -> int:
         """Give *uid* the lowest free port above *after*.
 
-        Needed because this can only avoid the ports it handed out itself -
-        anything else on the host holding one is discovered by the bind
-        failing, and the room then moves rather than being lost.
+        Ports held by another process are only ever learned from a bind
+        failing, so they are remembered here: without that, every room in turn
+        would rediscover the same busy port the same slow way.
         """
         taken = {port for held, port in self._ports.items() if held != uid}
+        taken |= self._blocked
         port = max(self.base, after + 1)
         while port in taken:
             port += 1
@@ -327,6 +337,7 @@ class Bridge:
                         exc,
                     )
                     return None
+                self._ports.block(player.port)
                 moved = self._ports.reassign(player.zone.uid, after=player.port)
                 LOGGER.info(
                     "Port %d is already in use on this host; moving %s to %d",
