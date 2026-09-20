@@ -120,12 +120,18 @@ from the environment only, because changing one needs a restart.
 | Port | Purpose |
 | --- | --- |
 | `32700/tcp` | The settings page and `/status.json` |
-| `32600/tcp` and up | One Plex Companion player per room, counting up as rooms are found |
+| `32701/tcp` and up | One Plex Companion player per room, counting up as rooms are found |
 | `32412/udp` | GDM — how Plex clients on the network find the rooms |
 
 Each room needs a port of its own because a Plex controller identifies a player by the address it
 answers on; one port cannot be two players. A room keeps its port across restarts, so the addresses
 published to your account stay valid.
+
+The rooms start at `32701` rather than somewhere lower because this bridge usually runs on the same
+machine as Plex Media Server, and the ports just below are **Plex's own** — `32400` the server,
+`32410`–`32414` GDM, `32469` DLNA, and `32600` the Tuner Service. The whole bridge therefore sits in
+one contiguous block above Plex's range. Those ports are stepped over automatically if you point
+`PLAYER_PORT_BASE` at them anyway.
 
 ## Configuration
 
@@ -136,7 +142,7 @@ changed on the settings page, which then takes precedence.
 | --- | --- | --- | --- |
 | `NAME_SUFFIX` | `" (Sonos)"` | ● | Appended to each room name in Plexamp. Set to `""` for bare room names. |
 | `HTTP_PORT` | `32700` | | Port for the settings page. |
-| `PLAYER_PORT_BASE` | `32600` | | First port for the per-room players. |
+| `PLAYER_PORT_BASE` | `32701` | | First port for the per-room players. Plex's own ports are skipped. |
 | `PLEX_TOKEN` | — | | A Plex token, if you would rather supply one than link interactively. |
 | `PLEX_VERIFY_SSL` | `true` | | Check your Plex server's certificate. Only relevant when the bridge has to use HTTPS at all — see [Reaching your Plex server](#reaching-your-plex-server). Never affects plex.tv, which is always verified. |
 | `SONOS_HOSTS` | — | ● | Comma-separated player IPs, for when multicast discovery is unreliable. One is enough — the rest are read from the topology, and setting it also skips the discovery wait at start-up. |
@@ -221,11 +227,19 @@ is on host networking, that the host shares a subnet with the speakers, and that
 the host holds UDP 1900 (`ss -lunp | grep 1900`). Setting `SONOS_HOSTS` to one player's IP address
 skips discovery entirely.
 
-**Rooms are listed, but Plexamp does not show them.** On a phone, that is almost always the account
-link — check the settings page says *Linked*. On a desktop, it is the multicast path: Plexamp must
-be on the same subnet, and some routers and access points filter multicast between wired and
-wireless clients (look for IGMP snooping or "multicast enhancement" settings). The page tells you
-whether GDM is running.
+**Rooms are listed, but Plexamp does not show them.** The **On Plex** column on the settings page
+says which half of the problem you have.
+
+*not published*, while linked, is the one that matters: the room is registered on your account
+without a working address, and a controller will prefer that broken record over the copy it found
+on your own network — so the room disappears from Plexamp entirely, having been visible before you
+linked. The log says why plex.tv refused. **Unlink** on the settings page takes those records off
+the account and puts you back to local-network discovery, which works without an account at all.
+
+*published* means a phone can reach it, and anything still missing is the multicast path for
+desktop clients: Plexamp must be on the same subnet, and some routers and access points filter
+multicast between wired and wireless clients (look for IGMP snooping or "multicast enhancement"
+settings). The page tells you whether GDM is running.
 
 **The room says it could not read something from Plex.** The message names what the server
 actually said. `HTTP 401` is a token your controller no longer has rights for — re-link, or restart

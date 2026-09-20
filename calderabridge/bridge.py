@@ -21,7 +21,7 @@ from aiohttp import web
 from . import web as settings_web
 from .companion import TimelineSubscribers
 from .companion import create_app as create_player_app
-from .config import BRIDGE_NAME, BRIDGE_VERSION, Config, SettingsStore
+from .config import BRIDGE_NAME, BRIDGE_VERSION, PLEX_PORTS, Config, SettingsStore
 from .discovery import TopologyManager
 from .gdm import GdmServer
 from .net import local_ip_towards
@@ -49,10 +49,15 @@ class PortAllocator:
     would be holding stale addresses for rooms that had not changed.
     """
 
-    def __init__(self, base: int, path: Path) -> None:
+    def __init__(self, base: int, path: Path, avoid: set[int] | None = None) -> None:
         self.base = base
         self.path = path
         self._ports: dict[str, int] = {}
+        #: Ports known to belong to something else before anything is tried.
+        #: Plex's own are in here: this bridge usually shares a host with Plex
+        #: Media Server, and stepping over its ports is better than discovering
+        #: each one by a failed bind.
+        self._avoid: set[int] = set(avoid or ())
         #: Ports something else on this host is holding.  Learned by a bind
         #: failing, kept only for this run - whatever holds one now may well
         #: have let go by the next start, and the rooms that matter already
@@ -101,7 +106,7 @@ class PortAllocator:
         would rediscover the same busy port the same slow way.
         """
         taken = {port for held, port in self._ports.items() if held != uid}
-        taken |= self._blocked
+        taken |= self._blocked | self._avoid
         port = max(self.base, after + 1)
         while port in taken:
             port += 1
@@ -128,7 +133,9 @@ class Bridge:
         self.plex: PlexClient | None = None
 
         self._ports = PortAllocator(
-            config.player_port_base, Path(config.config_dir) / PORTS_FILENAME
+            config.player_port_base,
+            Path(config.config_dir) / PORTS_FILENAME,
+            avoid=PLEX_PORTS,
         )
         self._session: aiohttp.ClientSession | None = None
         self._settings_runner: web.AppRunner | None = None
@@ -164,6 +171,15 @@ class Bridge:
             self.config, self._session, soap_client, self.bridge_ip
         )
         self._topology.set_callback(self._on_zones_changed)
+
+        if self.config.player_port_base in PLEX_PORTS:
+            LOGGER.warning(
+                "PLAYER_PORT_BASE is %d, which Plex Media Server uses on the host "
+                "it runs on. Rooms will step over it, but a base clear of Plex's "
+                "ports (the default is %d) avoids the shuffle.",
+                self.config.player_port_base,
+                32701,
+            )
 
         await self._start_settings_site()
         await self._start_gdm()
@@ -421,6 +437,9 @@ class Bridge:
         uri = f"http://{self.bridge_ip}:{player.port}"
         if await self.account.publish(player.machine_identifier, player.name, uri):
             self._published[player.zone.uid] = uri
+            player.published_uri = uri
+        else:
+            player.published_uri = ""
 
     # ------------------------------------------------------------------
     # Settings page actions
@@ -509,9 +528,21 @@ class Bridge:
         }
 
     async def unlink(self) -> None:
-        self.identity.forget()
+        """Take the rooms off the account, then forget the token.
+
+        In that order, and the order is the point: removing a device needs the
+        token.  Dropping it first would strand the rooms on the account for
+        good, still claiming an address this bridge no longer answers on - and
+        a stale record like that is enough to hide the copy of a room a
+        controller found on the network by itself.
+        """
         if self.account:
+            with contextlib.suppress(Exception):
+                removed = await self.account.remove_all()
+                if removed:
+                    LOGGER.info("Removed %d room(s) from the Plex account", removed)
             self.account.forget_published()
+        self.identity.forget()
         self._published.clear()
         LOGGER.info("Plex account unlinked")
 

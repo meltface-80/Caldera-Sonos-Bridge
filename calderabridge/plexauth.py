@@ -30,6 +30,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
+from defusedxml import ElementTree as DET
 
 from .config import BRIDGE_NAME, BRIDGE_VERSION, Config
 
@@ -52,6 +53,29 @@ PROVIDES = "client,player,pubsub-player"
 #: fifteen minutes, so stop waiting a little before it would expire anyway.
 LINK_TIMEOUT = 13 * 60
 LINK_POLL_INTERVAL = 3.0
+
+
+def device_id_from_xml(body: object, client_id: str) -> str | None:
+    """The numeric id plex.tv gives a device when it registers it.
+
+    ``PUT /devices/<id>`` needs this, and the registration response is where it
+    is stated.
+    """
+    if not isinstance(body, str) or not body.strip().startswith("<"):
+        return None
+    try:
+        root = DET.fromstring(body)
+    except Exception:
+        return None
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "Device":
+            continue
+        if client_id and node.get("clientIdentifier") not in (client_id, None, ""):
+            continue
+        found = node.get("id")
+        if found:
+            return str(found)
+    return None
 
 
 class PlexAuthError(Exception):
@@ -161,6 +185,8 @@ class PlexAccount:
         self._session = session
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._published: dict[str, str] = {}
+        #: The numeric id plex.tv gave each room, needed to take it off again.
+        self._device_ids: dict[str, str] = {}
 
     # -- plumbing -------------------------------------------------------
     async def _request(
@@ -266,20 +292,32 @@ class PlexAccount:
         if self._published.get(client_id) == uri:
             return True
 
-        # Any authenticated call carrying the room's own identifier and
-        # X-Plex-Provides registers it against the account, which is what makes
-        # the connection URI below addressable.
+        # Registering the room and giving it an address are two calls, and a
+        # room registered without one is worse than no room at all: a
+        # controller merges the account's record with what it found on the
+        # network, prefers the account's, and then has nowhere to send
+        # anything.  So a half-finished registration is undone rather than
+        # left standing.
+        device_id = None
         try:
-            await self._request(
-                "POST",
-                f"{PLEX_TV}/devices.xml",
-                client_id=client_id,
-                name=name,
+            status, body = await self._request(
+                "POST", f"{PLEX_TV}/devices.xml", client_id=client_id, name=name
             )
-            device_id = await self._device_id(client_id, name)
+            # The numeric id comes back with the registration itself.  Reading
+            # it from the account's resource list instead does not work: that
+            # list is keyed by client identifier and need not carry the id at
+            # all, which left the address unattached.
+            device_id = device_id_from_xml(body, client_id)
             if device_id is None:
-                LOGGER.debug("plex.tv has no device record for %s yet", name)
+                device_id = await self._device_id(client_id, name)
+            if device_id is None:
+                LOGGER.warning(
+                    "plex.tv registered %s but did not say under which id, so it "
+                    "has no address. Plexamp on a phone will not reach it.",
+                    name,
+                )
                 return False
+
             status, _ = await self._request(
                 "PUT",
                 f"{PLEX_TV}/devices/{device_id}?Connection[][uri]={quote(uri, safe='')}",
@@ -287,13 +325,23 @@ class PlexAccount:
                 name=name,
             )
         except PlexAuthError as exc:
-            LOGGER.debug("Could not publish %s to plex.tv: %s", name, exc)
+            LOGGER.warning("Could not publish %s to plex.tv: %s", name, exc)
+            if device_id is not None:
+                await self.remove_device(device_id)
             return False
 
         if status not in (200, 201, 204):
-            LOGGER.debug("plex.tv refused the address for %s (HTTP %s)", name, status)
+            LOGGER.warning(
+                "plex.tv would not take the address for %s (HTTP %s); removing the "
+                "registration so it cannot mask the copy found on your network",
+                name,
+                status,
+            )
+            await self.remove_device(device_id)
             return False
+
         self._published[client_id] = uri
+        self._device_ids[client_id] = device_id
         LOGGER.info("Published %s to plex.tv at %s", name, uri)
         return True
 
@@ -308,6 +356,33 @@ class PlexAccount:
                 value = device.get("id")
                 return None if value is None else str(value)
         return None
+
+    async def remove_device(self, device_id: str) -> bool:
+        """Take one device off the account."""
+        try:
+            status, _ = await self._request(
+                "DELETE", f"{PLEX_TV}/devices/{device_id}.xml"
+            )
+        except PlexAuthError as exc:
+            LOGGER.debug("Could not remove device %s: %s", device_id, exc)
+            return False
+        return status in (200, 204, 404)
+
+    async def remove_all(self) -> int:
+        """Take every room this bridge registered off the account.
+
+        Unlinking has to do this.  Forgetting the token locally would otherwise
+        leave the rooms listed on the account for good, pointing at a bridge
+        that no longer answers for them - and a stale record is exactly what
+        stops a working player being seen.
+        """
+        removed = 0
+        for client_id, device_id in list(self._device_ids.items()):
+            if await self.remove_device(device_id):
+                removed += 1
+            self._device_ids.pop(client_id, None)
+            self._published.pop(client_id, None)
+        return removed
 
     def forget_published(self, client_id: str = "") -> None:
         """Drop the memo of what was published, so the next call re-publishes."""

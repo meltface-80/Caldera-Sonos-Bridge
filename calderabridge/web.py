@@ -162,6 +162,23 @@ def _duration(ms: object) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def _plex_cell(status: dict, room: dict) -> str:
+    """Whether a phone can reach this room.
+
+    Worth its own column: a room registered on the account with no address is
+    the one failure that makes a working player *disappear* from Plexamp
+    rather than merely not appear.
+    """
+    if not status["plex"]["linked"]:
+        return '<span class=dim>local network only</span>'
+    if room.get("publishedUri"):
+        return f'<span class=ok>published</span><br><span class=dim>{_esc(room["publishedUri"])}</span>'
+    return (
+        '<span class=bad>not published</span><br>'
+        "<span class=dim>a phone will not see this room</span>"
+    )
+
+
 def _rooms_table(status: dict) -> str:
     rows = []
     for room in status["rooms"]:
@@ -200,6 +217,8 @@ def _rooms_table(status: dict) -> str:
             f"<br><span class=dim>{_esc(model)}</span></span></span></td>"
             f'<td data-label="Sonos">{_esc(room["sonosIp"])}'
             f"<span class=dim> &middot; port {room['port']}</span></td>"
+            f'<td data-label="On Plex">{_plex_cell(status, room)}</td>'
+
             f'<td data-label="Coordinator">{_esc(room["coordinator"])}</td>'
             f'<td data-label="State"><span class="pill {_esc(room["state"])}">'
             f'{_esc(room["state"])}</span></td>'
@@ -211,7 +230,7 @@ def _rooms_table(status: dict) -> str:
 
     if not rows:
         rows.append(
-            '<tr><td class=empty colspan="6">No Sonos rooms found yet. Check that the '
+            '<tr><td class=empty colspan="7">No Sonos rooms found yet. Check that the '
             "container runs with <code>--network host</code>, or set "
             "<code>SONOS_HOSTS</code> to one player's IP address.</td></tr>"
         )
@@ -538,8 +557,8 @@ GDM is {gdm}.</p>
 
 <section class=card><h2>Rooms</h2>
 <table><thead><tr>
-<th>Player</th><th>Sonos</th><th>Group coordinator</th><th>State</th>
-<th>Now playing</th><th>Volume</th></tr></thead>
+<th>Player</th><th>Sonos</th><th>On Plex</th><th>Group coordinator</th>
+<th>State</th><th>Now playing</th><th>Volume</th></tr></thead>
 <tbody id=rooms>{_rooms_table(status)}</tbody></table></section>
 
 <section class=card><h2>Settings</h2>

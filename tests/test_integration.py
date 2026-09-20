@@ -318,3 +318,14 @@ async def test_a_busy_port_is_only_discovered_once(tmp_path, household, fake_ple
     finally:
         await bridge.stop()
         squatter.close()
+
+
+async def test_plex_own_ports_are_stepped_over_without_trying_them(tmp_path, household, fake_plex):
+    from calderabridge.bridge import PortAllocator
+    from calderabridge.config import PLEX_PORTS
+
+    allocator = PortAllocator(32600, tmp_path / "ports.json", avoid=PLEX_PORTS)
+    # 32600 is the Plex Tuner Service; it is never handed out, rather than
+    # being handed out and discovered busy.
+    assert allocator.port_for("room-a") == 32601
+    assert allocator.port_for("room-b") == 32602
