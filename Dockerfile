@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.title="Caldera Sonos Bridge" \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HTTP_PORT=32700 \
-    PLAYER_PORT_BASE=32600 \
+    PLAYER_PORT_BASE=32701 \
     CONFIG_DIR=/config
 
 WORKDIR /app
@@ -39,7 +39,7 @@ USER bridge
 # Informational only: the bridge needs host networking for GDM multicast and for
 # Sonos discovery, so published ports do not apply in normal use.
 EXPOSE 32700/tcp
-EXPOSE 32600-32615/tcp
+EXPOSE 32701-32720/tcp
 EXPOSE 32412/udp
 
 HEALTHCHECK --interval=60s --timeout=5s --start-period=20s --retries=3 \

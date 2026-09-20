@@ -32,12 +32,30 @@ UUID_NAMESPACE = uuid.UUID("2f4d7c61-9a0e-5b3f-8c72-1d6e4a9b0f35")
 DEFAULT_CONFIG_DIR = "/config"
 SETTINGS_FILENAME = "settings.json"
 
-#: Ports.  32700 is the settings page.  Each room gets its own Plex Companion
-#: port counting up from 32600, because a Plex player is identified by the
-#: endpoint it answers on - one port cannot be two players.
+#: Ports.  32700 is the settings page, and each room gets its own Plex Companion
+#: port counting up from just above it, because a Plex player is identified by
+#: the endpoint it answers on - one port cannot be two players.
+#:
+#: Starting at 32701 rather than 32600 is deliberate.  This bridge usually runs
+#: on the same machine as Plex Media Server, and 32600 is Plex's own: the Tuner
+#: Service binds it.  The whole bridge therefore sits in one contiguous block
+#: above Plex's range, which is easier to reason about and to firewall.
 DEFAULT_SETTINGS_PORT = 32700
-DEFAULT_PLAYER_PORT_BASE = 32600
+DEFAULT_PLAYER_PORT_BASE = 32701
 DEFAULT_GDM_PORT = 32412
+
+#: Ports Plex Media Server uses on the host it runs on.  The bridge keeps clear
+#: of these by default; they are listed so a hand-set PLAYER_PORT_BASE that
+#: lands on one can be called out at start-up rather than discovered by a bind
+#: failing partway through.
+PLEX_PORTS = {
+    32400,  # the server itself
+    32410, 32412, 32413, 32414,  # GDM
+    32469,  # DLNA
+    32600,  # Tuner Service (DVR)
+    3005,  # Plex Companion
+    8324,  # Roku control
+}
 
 #: Keys the settings page may write.  Anything outside this set is either a port
 #: (changing it needs a restart, so it stays an environment variable) or derived.

@@ -23,7 +23,7 @@ def test_env_defaults(monkeypatch):
 
 def test_settings_port_defaults_to_32700():
     assert Config().settings_port == 32700
-    assert Config().player_port_base == 32600
+    assert Config().player_port_base == 32701
 
 
 def test_nonsense_values_fall_back(monkeypatch):
@@ -146,3 +146,24 @@ def test_reset_everything(tmp_path):
     store.reset(None)
     assert config.mode == "queue"
     assert config.name_suffix == " (Sonos)"
+
+
+def test_the_default_player_ports_keep_clear_of_plex():
+    from calderabridge.config import PLEX_PORTS, Config
+
+    config = Config()
+    # The bridge usually shares a host with Plex Media Server, so its own
+    # default ports must not land on Plex's. 32600 is the Tuner Service.
+    assert config.player_port_base not in PLEX_PORTS
+    assert config.settings_port not in PLEX_PORTS
+    assert 32600 in PLEX_PORTS
+
+    # A run of rooms should stay clear too.
+    for offset in range(20):
+        assert config.player_port_base + offset not in PLEX_PORTS
+
+
+def test_the_bridge_sits_in_one_block_above_plex():
+    config = Config()
+    assert config.settings_port == 32700
+    assert config.player_port_base == 32701

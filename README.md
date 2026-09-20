@@ -120,12 +120,18 @@ from the environment only, because changing one needs a restart.
 | Port | Purpose |
 | --- | --- |
 | `32700/tcp` | The settings page and `/status.json` |
-| `32600/tcp` and up | One Plex Companion player per room, counting up as rooms are found |
+| `32701/tcp` and up | One Plex Companion player per room, counting up as rooms are found |
 | `32412/udp` | GDM — how Plex clients on the network find the rooms |
 
 Each room needs a port of its own because a Plex controller identifies a player by the address it
 answers on; one port cannot be two players. A room keeps its port across restarts, so the addresses
 published to your account stay valid.
+
+The rooms start at `32701` rather than somewhere lower because this bridge usually runs on the same
+machine as Plex Media Server, and the ports just below are **Plex's own** — `32400` the server,
+`32410`–`32414` GDM, `32469` DLNA, and `32600` the Tuner Service. The whole bridge therefore sits in
+one contiguous block above Plex's range. Those ports are stepped over automatically if you point
+`PLAYER_PORT_BASE` at them anyway.
 
 ## Configuration
 
@@ -136,7 +142,7 @@ changed on the settings page, which then takes precedence.
 | --- | --- | --- | --- |
 | `NAME_SUFFIX` | `" (Sonos)"` | ● | Appended to each room name in Plexamp. Set to `""` for bare room names. |
 | `HTTP_PORT` | `32700` | | Port for the settings page. |
-| `PLAYER_PORT_BASE` | `32600` | | First port for the per-room players. |
+| `PLAYER_PORT_BASE` | `32701` | | First port for the per-room players. Plex's own ports are skipped. |
 | `PLEX_TOKEN` | — | | A Plex token, if you would rather supply one than link interactively. |
 | `PLEX_VERIFY_SSL` | `true` | | Check your Plex server's certificate. Only relevant when the bridge has to use HTTPS at all — see [Reaching your Plex server](#reaching-your-plex-server). Never affects plex.tv, which is always verified. |
 | `SONOS_HOSTS` | — | ● | Comma-separated player IPs, for when multicast discovery is unreliable. One is enough — the rest are read from the topology, and setting it also skips the discovery wait at start-up. |
