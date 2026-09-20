@@ -1,0 +1,15 @@
+.git
+.github
+docs
+tests
+tools
+*.md
+!README.md
+.gitignore
+pytest.ini
+ruff.toml
+requirements-dev.txt
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache

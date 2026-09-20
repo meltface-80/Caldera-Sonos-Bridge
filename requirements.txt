@@ -1,0 +1,2 @@
+aiohttp>=3.9,<4
+defusedxml>=0.7.1,<0.8
