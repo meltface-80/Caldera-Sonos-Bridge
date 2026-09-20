@@ -284,3 +284,37 @@ async def test_a_room_moves_along_when_its_port_is_taken(tmp_path, household, fa
     finally:
         await bridge.stop()
         squatter.close()
+
+
+async def test_a_busy_port_is_only_discovered_once(tmp_path, household, fake_plex, caplog):
+    import logging
+    import socket
+
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("0.0.0.0", PLAYER_BASE))
+    squatter.listen(1)
+
+    config = Config(
+        bridge_ip="127.0.0.1",
+        settings_port=SETTINGS_PORT,
+        player_port_base=PLAYER_BASE,
+        config_dir=str(tmp_path),
+        static_hosts=["127.0.0.1"],
+        gdm_enabled=False,
+        discovery_interval=3600.0,
+        topology_interval=3600.0,
+        poll_interval=3600.0,
+    )
+    bridge = Bridge(config)
+    with caplog.at_level(logging.INFO, logger="calderabridge.bridge"):
+        await bridge.start()
+    try:
+        # Two rooms, but the busy port is found the hard way only once: the
+        # second room is told about it rather than repeating the failed bind.
+        moves = [r for r in caplog.messages if "already in use" in r]
+        assert len(moves) == 1, moves
+        assert len(bridge.players) == 2
+    finally:
+        await bridge.stop()
+        squatter.close()
