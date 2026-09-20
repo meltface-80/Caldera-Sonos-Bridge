@@ -392,3 +392,64 @@ async def test_volume_above_the_ceiling_is_clamped_for_plex(
     await player.refresh()
     # Plex only understands 0-100, so the scaled-back figure has to be capped.
     assert player.volume == 100
+
+
+# ----------------------------------------------------------------------
+# Getting playback started when the request is awkward
+# ----------------------------------------------------------------------
+async def test_a_token_sent_only_as_a_header_is_used(player, fake_sonos, fake_plex):
+    params = play_params(fake_plex)
+    del params["token"]  # some controllers only put it in the header
+
+    await player.play_media(params, {"X-Plex-Token": "tok-123"})
+    assert player.state == "playing"
+    assert len(fake_sonos.queue) == 3
+
+
+async def test_an_unreadable_play_queue_falls_back_to_the_named_track(
+    player, fake_sonos, fake_plex
+):
+    fake_plex.queue_ok = False  # expired queue, or a server that answered oddly
+    params = play_params(fake_plex, key="/library/metadata/101")
+
+    await player.play_media(params)
+    assert player.state == "playing"
+    assert len(fake_sonos.queue) == 1
+
+
+async def test_a_failure_says_what_plex_actually_said(player, fake_plex):
+    fake_plex.queue_ok = False
+    fake_plex.metadata_ok = False
+
+    await player.play_media(play_params(fake_plex, key="/library/metadata/101"))
+    assert player.state == "stopped"
+    assert "404" in player.last_error
+
+
+async def test_a_missing_token_is_named_precisely(player):
+    await player.play_media({"address": "10.0.0.5", "containerKey": "/playQueues/1"})
+    assert "access token" in player.last_error
+
+    await player.play_media({"token": "t", "containerKey": "/playQueues/1"})
+    assert "address" in player.last_error
+
+
+async def test_hi_res_tracks_reach_sonos_as_flac(
+    config, zone, fake_sonos, plex_client, fake_plex
+):
+    fake_plex.track_kwargs = {"sample_rate": 192000, "bit_depth": 24}
+    player = RoomPlayer(
+        config, zone, StubTopology({zone.uid: zone}), fake_sonos, plex_client, 32600
+    )
+    await player.play_media(play_params(fake_plex))
+
+    for uri, metadata in fake_sonos.queue:
+        assert "start.flac" in uri
+        assert "audio/flac" in metadata
+
+
+async def test_cd_resolution_tracks_reach_sonos_untouched(player, fake_sonos, fake_plex):
+    await player.play_media(play_params(fake_plex))
+    for uri, _ in fake_sonos.queue:
+        assert "/library/parts/" in uri
+        assert "/transcode/" not in uri

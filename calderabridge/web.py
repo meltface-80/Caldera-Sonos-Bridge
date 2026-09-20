@@ -188,24 +188,32 @@ def _rooms_table(status: dict) -> str:
         else:
             now = "<span class=dim>-</span>"
 
+        # Every cell carries the heading it sits under.  On a phone the table
+        # stops being a table - the headings go away and each cell labels
+        # itself - which is the only way six columns fit a 360px screen
+        # without either a sideways scroll or one word per line.
         rows.append(
             "<tr>"
-            f'<td><span class=room><span class=glyph>{icon}</span>'
+            f'<td class=player data-label="Player"><span class=room>'
+            f"<span class=glyph>{icon}</span>"
             f"<span><strong>{_esc(room['playerName'])}</strong>"
             f"<br><span class=dim>{_esc(model)}</span></span></span></td>"
-            f"<td>{_esc(room['sonosIp'])}<br><span class=dim>port {room['port']}</span></td>"
-            f"<td>{_esc(room['coordinator'])}</td>"
-            f"<td><span class=\"pill {_esc(room['state'])}\">{_esc(room['state'])}</span></td>"
-            f"<td>{now}</td>"
-            f"<td>{room['volume']}{' (muted)' if room['mute'] else ''}</td>"
+            f'<td data-label="Sonos">{_esc(room["sonosIp"])}'
+            f"<span class=dim> &middot; port {room['port']}</span></td>"
+            f'<td data-label="Coordinator">{_esc(room["coordinator"])}</td>'
+            f'<td data-label="State"><span class="pill {_esc(room["state"])}">'
+            f'{_esc(room["state"])}</span></td>'
+            f'<td data-label="Now playing">{now}</td>'
+            f'<td data-label="Volume">{room["volume"]}'
+            f"{' (muted)' if room['mute'] else ''}</td>"
             "</tr>"
         )
 
     if not rows:
         rows.append(
-            '<tr><td colspan="6">No Sonos rooms found yet. Check that the container '
-            "runs with <code>--network host</code>, or set <code>SONOS_HOSTS</code> "
-            "to one player's IP address.</td></tr>"
+            '<tr><td class=empty colspan="6">No Sonos rooms found yet. Check that the '
+            "container runs with <code>--network host</code>, or set "
+            "<code>SONOS_HOSTS</code> to one player's IP address.</td></tr>"
         )
     return "".join(rows)
 
@@ -282,9 +290,10 @@ def _settings_form(status: dict) -> str:
                 "stream_format",
                 "Stream format",
                 _select("stream_format", settings["stream_format"], STREAM_FORMATS),
-                "<code>original</code> sends the file as Plex stores it - the right "
-                "choice for a FLAC or MP3 library. Anything Sonos cannot play is "
-                "transcoded regardless.",
+                "<code>original</code> is bit-perfect at 16/44.1, 16/48, 24/44.1 "
+                "and 24/48 - the file reaches the speaker exactly as Plex stores "
+                "it. Anything above 24/48 is resampled to 24/48 by your server "
+                "and stays lossless FLAC. The other two transcode everything.",
             ),
             f(
                 "max_bitrate_kbps",
@@ -454,12 +463,41 @@ STYLE = """
  button.link { background: none; border: 0; color: var(--dim); text-decoration: underline;
           padding: 0; font-size: .78rem; }
  .inline { display: inline; }
- .code { font: 700 1.9rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-         letter-spacing: .35em; margin: .75rem 0; }
+ .code { font: 700 1.9rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+         letter-spacing: .3em; margin: .75rem 0; text-transform: uppercase;
+         /* The trailing letter-space would push a full-width code off the
+            edge, and a code must never be the thing that breaks the layout. */
+         padding-right: .3em; overflow-wrap: anywhere; word-break: break-word; }
  .banner { background: rgba(46,125,50,.15); color: var(--ok); padding: .6rem .9rem;
            border-radius: 8px; margin-bottom: 1.25rem; font-size: .9rem; }
  footer { color: var(--dim); font-size: .82rem; margin-top: 2rem; }
  footer a { color: inherit; }
+
+ /* Nothing may reach past the viewport: a settings page you have to scroll
+    sideways to read is no use on the phone you are holding in the kitchen. */
+ html, body { max-width: 100%; overflow-x: hidden; }
+ h1, p, td, th, label, .note { overflow-wrap: break-word; }
+ input, select, button { max-width: 100%; }
+
+ @media (max-width: 640px) {
+   body { padding: 1.25rem .75rem 2.5rem; }
+   .card { padding: 1rem .85rem; }
+   .grid { grid-template-columns: 1fr; gap: 1.1rem; }
+   .code { font-size: 1.5rem; letter-spacing: .25em; }
+
+   /* The rooms table becomes a list of rooms.  Each cell labels itself from
+      the heading it sat under, so nothing is lost with the columns. */
+   table, tbody, tr, td { display: block; width: 100%; }
+   thead { display: none; }
+   tr { padding: .7rem 0; border-bottom: 1px solid var(--line); }
+   tr:last-child { border-bottom: 0; }
+   td { border: 0; padding: .18rem 0; display: flex; gap: .7rem;
+        align-items: baseline; }
+   td::before { content: attr(data-label); flex: 0 0 5.6rem; font-size: .68rem;
+                text-transform: uppercase; letter-spacing: .04em; opacity: .55; }
+   td.player, td.empty { display: block; padding-bottom: .4rem; }
+   td.player::before, td.empty::before { content: none; }
+ }
 """
 
 

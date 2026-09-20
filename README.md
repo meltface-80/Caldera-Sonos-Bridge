@@ -1,6 +1,6 @@
 # Caldera Sonos Bridge
 
-**Play your Plex music library to Sonos speakers, from Plexamp.** — v1.0.0
+**Play your Plex music library to Sonos speakers, from Plexamp.** — v0.1.0
 
 [Caldera Music headless](https://caldera.homes/music/headless/) is a Plex-powered music
 daemon for Linux: you install it on an always-on machine, link it to your Plex account, and it
@@ -73,8 +73,8 @@ docker run -d \
 ```
 
 That is the whole installation. Open `http://<host-ip>:32700/` — the settings page lists the rooms
-it has found, and has a **Link a Plex account** button. Click it, enter the code it gives you at
-[plex.tv/link](https://plex.tv/link), and your rooms appear in Plexamp.
+it has found, and has a **Link a Plex account** button. Click it, enter the four-character code it
+gives you at [plex.tv/link](https://plex.tv/link), and your rooms appear in Plexamp.
 
 > **`--network host` is required.** Plex's discovery protocol is multicast, and multicast does not
 > cross Docker's default bridge network. Host networking is what lets Plex clients find your rooms
@@ -142,7 +142,7 @@ changed on the settings page, which then takes precedence.
 | `INCLUDE_ZONES` | — | ● | Publish only these rooms, e.g. `Kitchen,Study`. |
 | `EXCLUDE_ZONES` | — | ● | Publish everything except these rooms. |
 | `BRIDGE_MODE` | `queue` | ● | `queue` for gapless playback via the Sonos queue; `direct` loads each track straight onto the transport. |
-| `STREAM_FORMAT` | `original` | ● | `original` sends the file as Plex stores it. `flac` or `mp3` ask Plex to transcode on the way out. |
+| `STREAM_FORMAT` | `original` | ● | `original` is bit-perfect within 24/48 and resamples above it — see [Formats](#formats-and-what-reaches-the-speaker). `flac` or `mp3` transcode everything. |
 | `MAX_BITRATE_KBPS` | `0` | ● | Ceiling when transcoding to MP3. `0` means none. |
 | `VOLUME_LIMIT` | `100` | ● | What Plex's slider at 100% sets the speaker to. |
 | `UNGROUP_ON_PLAY` | `false` | ● | Detach a room from its Sonos group before playing to it. |
@@ -169,17 +169,28 @@ docker run -d --name caldera-sonos-bridge --network host --restart unless-stoppe
 > ownership automatically. If you would rather bind-mount a host directory, either
 > `chown -R 10001:10001 ./config` first or run the container with `--user "$(id -u):$(id -g)"`.
 
-## Formats
+## Formats, and what reaches the speaker
 
-Sonos accepts FLAC, ALAC, WAV, AIFF, MP3, AAC and Ogg over HTTP, up to 24-bit/48 kHz on current S2
-hardware — and does not play DSD at all. If your library is already in one of those, leave
-`STREAM_FORMAT` at `original` and the speaker gets the file exactly as Plex stores it: no
-transcoding, no loss, and no load on your server.
+Sonos S2 hardware plays FLAC, ALAC, WAV, AIFF, MP3, AAC and Ogg over HTTP, up to **24-bit/48 kHz**
+— and does not play DSD at all. The bridge's default (`STREAM_FORMAT=original`) follows one rule:
 
-Anything Sonos cannot take — a DSD file, a 24/192 FLAC, WMA lossless — is transcoded by Plex on the
-way out even under `original`, because the alternative is a speaker that simply refuses to play it.
-Set `STREAM_FORMAT` to `flac` or `mp3` only if you want *everything* transcoded, which is
-occasionally useful on a slow network.
+| Your file | What the speaker gets |
+| --- | --- |
+| 16/44.1, 16/48, 24/44.1, 24/48 | **The stored file, untouched — bit-perfect.** Nothing decodes, resamples or re-encodes anywhere between the library and the speaker. |
+| Above 24/48 — 24/88.2, 24/96, 24/192 | **Resampled to 24/48 and still lossless FLAC.** |
+| A container Sonos cannot read — DSD, WMA lossless | Transcoded to FLAC within the ceiling. |
+
+Hi-res is brought down rather than dropped to MP3 on purpose: losing the sample rate above 48 kHz
+is a far smaller loss than losing the lossless coding, and refusing to play the track is no use to
+anyone. The resample happens **on your Plex server**, which is the only thing in the chain that can
+do it — the bridge tells it the ceiling and never touches the audio.
+
+A file whose rate and depth Plex does not report is treated as within the ceiling and sent as-is.
+That is deliberate: most libraries are ordinary CD resolution, and assuming the worst would
+transcode a whole library that never needed it.
+
+`STREAM_FORMAT=flac` or `mp3` forces *everything* through the transcoder, which is occasionally
+useful on a slow network but costs you the bit-perfect path.
 
 ## Troubleshooting
 
@@ -196,9 +207,16 @@ be on the same subnet, and some routers and access points filter multicast betwe
 wireless clients (look for IGMP snooping or "multicast enhancement" settings). The page tells you
 whether GDM is running.
 
-**Playback starts then stops.** Usually a format Sonos will not take, or a token that has expired.
-Run with `LOG_LEVEL=DEBUG` and look for a UPnP error 714 (illegal MIME type), or try
-`STREAM_FORMAT=mp3` to confirm it is the format rather than the plumbing.
+**The room says it could not read something from Plex.** The message names what the server
+actually said. `HTTP 401` is a token your controller no longer has rights for — re-link, or restart
+Plexamp. `HTTP 404` is a play queue the server has already forgotten, which happens if playback was
+started a long time before the speaker was told about it; press play again. Anything else is worth
+a look at the log with `LOG_LEVEL=DEBUG`, which records every request the bridge makes (with the
+token redacted).
+
+**Playback starts then stops.** Usually a format Sonos will not take. Run with `LOG_LEVEL=DEBUG`
+and look for a UPnP error 714 (illegal MIME type), or try `STREAM_FORMAT=mp3` to confirm it is the
+format rather than the plumbing.
 
 **Playing to one room plays everywhere.** The room is grouped in the Sonos app, and transport
 commands belong to the group coordinator. Ungroup it, or set `UNGROUP_ON_PLAY=true`.

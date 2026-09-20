@@ -139,30 +139,56 @@ class RoomPlayer:
     # ------------------------------------------------------------------
     # Commands from Plex
     # ------------------------------------------------------------------
-    async def play_media(self, params: dict[str, str]) -> None:
+    async def play_media(
+        self, params: dict[str, str], headers: dict[str, str] | None = None
+    ) -> None:
         """``/player/playback/playMedia`` - start something new."""
+        headers = {k.lower(): v for k, v in (headers or {}).items()}
+        # Controllers are not consistent about where the server's access token
+        # rides: Plexamp puts it in the query, others only in the header.
+        token = (
+            params.get("token", "")
+            or params.get("X-Plex-Token", "")
+            or headers.get("x-plex-token", "")
+        )
         server = PlexServer(
             machine_identifier=params.get("machineIdentifier", ""),
             address=params.get("address", ""),
             port=int(params.get("port") or 32400),
             protocol=params.get("protocol") or "http",
-            token=params.get("token", "") or params.get("X-Plex-Token", ""),
+            token=token,
         )
         if not server.usable:
-            self.last_error = "The controller did not say where the media lives"
+            missing = "an address" if not server.address else "an access token"
+            self.last_error = f"The controller did not send {missing} for the server"
             LOGGER.warning("%s: %s", self.zone.name, self.last_error)
+            self._wake()
             return
 
-        container_key = params.get("containerKey", "") or params.get("key", "")
+        container_key = params.get("containerKey", "")
+        item_key = params.get("key", "")
         offset_ms = int(params.get("offset") or 0)
 
         async with self._lock:
             self.server = server
             self.queue = await self._plex.play_queue(
-                server, container_key, self.machine_identifier
+                server, container_key or item_key, self.machine_identifier
             )
+            if not self.queue.tracks and item_key:
+                # The queue could not be read - expired, or the server answered
+                # oddly.  Playing the one track the controller actually named is
+                # a great deal better than playing nothing.
+                LOGGER.info(
+                    "%s: no play queue from Plex, falling back to %s",
+                    self.zone.name,
+                    item_key,
+                )
+                self.queue = await self._plex.metadata(
+                    server, item_key, self.machine_identifier
+                )
             if not self.queue.tracks:
-                self.last_error = "Plex returned nothing playable for that request"
+                detail = self._plex.last_error or "it returned nothing playable"
+                self.last_error = f"Could not read that from Plex: {detail}"
                 LOGGER.warning("%s: %s", self.zone.name, self.last_error)
                 self.state = STATE_STOPPED
                 self._wake()
