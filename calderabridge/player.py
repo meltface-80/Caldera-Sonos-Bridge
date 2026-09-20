@@ -93,6 +93,8 @@ class RoomPlayer:
         self.current: PlexTrack | None = None
         self.command_id = "0"
         self.last_error = ""
+        #: Where this room is advertised on the Plex account, once it is.
+        self.published_uri = ""
 
         self._session_id = f"caldera-{self.machine_identifier[:8]}"
         self._lock = asyncio.Lock()
@@ -639,6 +641,7 @@ class RoomPlayer:
                 if track and self.state != STATE_STOPPED
                 else None
             ),
+            "publishedUri": self.published_uri,
             "queueLength": len(self.queue.tracks),
             "queueLoaded": len(self._loaded),
             "lastError": self.last_error,

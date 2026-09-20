@@ -22,6 +22,8 @@ class FakePlexTv:
         self.pin_exists = True
         self.registered: list[str] = []
         self.pin_query = ""
+        self.deleted: list[str] = []
+        self.publish_ok = True
         self.port = 0
         self._server: TestServer | None = None
 
@@ -33,6 +35,7 @@ class FakePlexTv:
         app.router.add_get("/api/v2/resources", self._resources)
         app.router.add_post("/devices.xml", self._register)
         app.router.add_put("/devices/{id}", self._publish)
+        app.router.add_delete("/devices/{id}.xml", self._delete)
         self._server = TestServer(app)
         await self._server.start_server()
         self.port = self._server.port
@@ -76,10 +79,25 @@ class FakePlexTv:
         )
 
     async def _register(self, request):
-        self.registered.append(request.headers.get("X-Plex-Client-Identifier", ""))
+        client_id = request.headers.get("X-Plex-Client-Identifier", "")
+        self.registered.append(client_id)
+        # A real registration answers with the device record, id and all.
+        return web.Response(
+            text=(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                f'<Device id="dev-1" clientIdentifier="{client_id}" '
+                'name="a room" provides="player"/>'
+            ),
+            content_type="application/xml",
+        )
+
+    async def _delete(self, request):
+        self.deleted.append(request.match_info["id"])
         return web.Response(text="<MediaContainer/>")
 
     async def _publish(self, request):
+        if not self.publish_ok:
+            return web.Response(status=422, text="nope")
         self.devices[request.match_info["id"]] = request.query_string
         return web.Response(text="<MediaContainer/>")
 
@@ -248,3 +266,45 @@ async def test_the_link_code_is_the_short_kind_plex_tv_link_accepts(account, ple
     assert "strong" not in plex_tv.pin_query
     assert len(code.code) == 4
     assert code.code.isalnum()
+
+
+# ----------------------------------------------------------------------
+# A registration is only worth having with an address on it
+# ----------------------------------------------------------------------
+def test_the_device_id_is_read_from_the_registration():
+    from calderabridge.plexauth import device_id_from_xml
+
+    body = (
+        '<?xml version="1.0"?><Device id="4821" clientIdentifier="room-1" '
+        'name="Kitchen"/>'
+    )
+    assert device_id_from_xml(body, "room-1") == "4821"
+    assert device_id_from_xml("not xml", "room-1") is None
+    assert device_id_from_xml({"id": 1}, "room-1") is None
+
+
+async def test_publishing_uses_the_id_from_the_registration(account, plex_tv):
+    account.identity.token = "tok-999"
+    assert await account.publish("room-1", "Kitchen", "http://192.168.1.2:32601")
+    assert "32601" in plex_tv.devices["dev-1"]
+
+
+async def test_a_registration_that_cannot_be_given_an_address_is_removed(
+    account, plex_tv
+):
+    account.identity.token = "tok-999"
+    plex_tv.publish_ok = False
+
+    assert not await account.publish("room-1", "Kitchen", "http://192.168.1.2:32601")
+    # Left standing, the account's addressless record masks the copy of the room
+    # a controller found on the network by itself.
+    assert plex_tv.deleted == ["dev-1"]
+
+
+async def test_unlinking_takes_the_rooms_off_the_account(account, plex_tv):
+    account.identity.token = "tok-999"
+    await account.publish("room-1", "Kitchen", "http://192.168.1.2:32601")
+    await account.publish("room-2", "Study", "http://192.168.1.2:32602")
+
+    assert await account.remove_all() == 2
+    assert plex_tv.deleted == ["dev-1", "dev-1"]

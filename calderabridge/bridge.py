@@ -421,6 +421,9 @@ class Bridge:
         uri = f"http://{self.bridge_ip}:{player.port}"
         if await self.account.publish(player.machine_identifier, player.name, uri):
             self._published[player.zone.uid] = uri
+            player.published_uri = uri
+        else:
+            player.published_uri = ""
 
     # ------------------------------------------------------------------
     # Settings page actions
@@ -509,9 +512,21 @@ class Bridge:
         }
 
     async def unlink(self) -> None:
-        self.identity.forget()
+        """Take the rooms off the account, then forget the token.
+
+        In that order, and the order is the point: removing a device needs the
+        token.  Dropping it first would strand the rooms on the account for
+        good, still claiming an address this bridge no longer answers on - and
+        a stale record like that is enough to hide the copy of a room a
+        controller found on the network by itself.
+        """
         if self.account:
+            with contextlib.suppress(Exception):
+                removed = await self.account.remove_all()
+                if removed:
+                    LOGGER.info("Removed %d room(s) from the Plex account", removed)
             self.account.forget_published()
+        self.identity.forget()
         self._published.clear()
         LOGGER.info("Plex account unlinked")
 

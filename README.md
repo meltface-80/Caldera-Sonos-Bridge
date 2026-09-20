@@ -221,11 +221,19 @@ is on host networking, that the host shares a subnet with the speakers, and that
 the host holds UDP 1900 (`ss -lunp | grep 1900`). Setting `SONOS_HOSTS` to one player's IP address
 skips discovery entirely.
 
-**Rooms are listed, but Plexamp does not show them.** On a phone, that is almost always the account
-link — check the settings page says *Linked*. On a desktop, it is the multicast path: Plexamp must
-be on the same subnet, and some routers and access points filter multicast between wired and
-wireless clients (look for IGMP snooping or "multicast enhancement" settings). The page tells you
-whether GDM is running.
+**Rooms are listed, but Plexamp does not show them.** The **On Plex** column on the settings page
+says which half of the problem you have.
+
+*not published*, while linked, is the one that matters: the room is registered on your account
+without a working address, and a controller will prefer that broken record over the copy it found
+on your own network — so the room disappears from Plexamp entirely, having been visible before you
+linked. The log says why plex.tv refused. **Unlink** on the settings page takes those records off
+the account and puts you back to local-network discovery, which works without an account at all.
+
+*published* means a phone can reach it, and anything still missing is the multicast path for
+desktop clients: Plexamp must be on the same subnet, and some routers and access points filter
+multicast between wired and wireless clients (look for IGMP snooping or "multicast enhancement"
+settings). The page tells you whether GDM is running.
 
 **The room says it could not read something from Plex.** The message names what the server
 actually said. `HTTP 401` is a token your controller no longer has rights for — re-link, or restart
