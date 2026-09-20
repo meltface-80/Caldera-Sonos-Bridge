@@ -10,6 +10,7 @@ server's "now playing" and your listening history honest.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from urllib.parse import quote, urlencode
 
@@ -25,8 +26,11 @@ SONOS_NATIVE_CONTAINERS = {
     "m4a", "mp4", "aac", "ogg", "oga",
 }
 
-#: Sonos S2 hardware tops out at 24-bit/48 kHz.  A file above that plays only if
-#: the server reduces it first, so it is treated the same as a foreign format.
+#: Sonos S2 hardware tops out at 24-bit/48 kHz.  Within that ceiling - 16/44.1,
+#: 16/48, 24/44.1, 24/48 - the stored file is handed over untouched and arrives
+#: at the speaker bit-perfect.  Above it, the server brings the stream down to
+#: exactly this, still lossless, because the alternative is a speaker that
+#: refuses to play the track at all.
 SONOS_MAX_SAMPLE_RATE = 48000
 SONOS_MAX_BIT_DEPTH = 24
 
@@ -40,6 +44,37 @@ def _int(value: str | None, default: int = 0) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
+
+
+def _xml_headers(client_id: str = "") -> dict[str, str]:
+    headers = {"Accept": "application/xml"}
+    if client_id:
+        headers["X-Plex-Client-Identifier"] = client_id
+    return headers
+
+
+def _loggable_url(url: str) -> str:
+    """A URL with the access token taken out, safe for a log file."""
+    return re.sub(r"(X-Plex-Token=)[^&]*", r"\1***", url)
+
+
+def client_profile_extra(
+    sample_rate: int = SONOS_MAX_SAMPLE_RATE, bit_depth: int = SONOS_MAX_BIT_DEPTH
+) -> str:
+    """The limitations that pin a FLAC transcode to what Sonos can play.
+
+    Plex decides a transcode from the profile the client declares, so this is
+    how "24-bit, 48 kHz, no higher" gets said.  ``isRequired`` makes them hard
+    limits rather than preferences.
+    """
+    return "+".join(
+        f"add-limitation(scope=audioCodec&scopeName=flac&type=upperBound"
+        f"&name={name}&value={value}&isRequired=true)"
+        for name, value in (
+            ("audio.samplingRate", sample_rate),
+            ("audio.bitDepth", bit_depth),
+        )
+    )
 
 
 @dataclass
@@ -105,13 +140,30 @@ class PlexTrack:
         return self.duration_ms / 1000.0
 
     @property
+    def too_high_resolution(self) -> bool:
+        """Is this above the 24-bit/48 kHz ceiling Sonos will accept?
+
+        A rate or depth Plex did not report reads as zero and counts as within
+        the ceiling.  That is deliberate: the common case by far is an ordinary
+        CD-resolution file, and guessing "too high" on missing metadata would
+        transcode a whole library that never needed it.
+        """
+        if self.sample_rate and self.sample_rate > SONOS_MAX_SAMPLE_RATE:
+            return True
+        return bool(self.bit_depth and self.bit_depth > SONOS_MAX_BIT_DEPTH)
+
+    @property
     def sonos_native(self) -> bool:
-        """Can a Sonos player take this file as Plex stores it?"""
+        """Can a Sonos player take this file exactly as Plex stores it?
+
+        True means the bytes reach the speaker untouched - no decode, no
+        resample, no re-encode anywhere along the path.
+        """
+        if not self.part_key:
+            return False
         if self.container.lower() not in SONOS_NATIVE_CONTAINERS:
             return False
-        if self.sample_rate and self.sample_rate > SONOS_MAX_SAMPLE_RATE:
-            return False
-        return not (self.bit_depth and self.bit_depth > SONOS_MAX_BIT_DEPTH)
+        return not self.too_high_resolution
 
 
 @dataclass
@@ -161,12 +213,21 @@ def parse_play_queue(xml_text: str) -> PlayQueue:
     queue.selected_offset = _int(root.get("playQueueSelectedItemOffset"), 0)
     queue.shuffled = root.get("playQueueShuffled", "0") == "1"
 
+    skipped = 0
     for node in root:
-        if _localname(node.tag) != "Track":
+        if _localname(node.tag) not in ("Track", "Video"):
             continue
         track = _parse_track(node)
-        if track.part_key:
+        # A track with no Part is still playable - the transcoder addresses it
+        # by metadata key.  Only something with no identity at all is no use,
+        # and dropping those quietly is what turns one odd item into a whole
+        # queue that "returned nothing playable".
+        if track.rating_key or track.key or track.part_key:
             queue.tracks.append(track)
+        else:
+            skipped += 1
+    if skipped:
+        LOGGER.debug("Ignored %d queue item(s) with no identity", skipped)
     return queue
 
 
@@ -213,18 +274,32 @@ class PlexClient:
     def __init__(self, session: aiohttp.ClientSession, timeout: float = 10.0) -> None:
         self._session = session
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        #: Why the last request failed, for the settings page to show.
+        self.last_error = ""
 
     async def _get(self, url: str, headers: dict[str, str] | None = None) -> str | None:
+        self.last_error = ""
         try:
             async with self._session.get(
                 url, headers=headers or {}, timeout=self._timeout
             ) as response:
+                body = await response.text()
                 if response.status != 200:
-                    LOGGER.debug("Plex answered HTTP %s for %s", response.status, url)
+                    # Worth saying out loud rather than at debug: a 401 here is
+                    # an expired token and a 404 a queue the server has already
+                    # forgotten, and both look identical from the speaker's end.
+                    self.last_error = f"Plex answered HTTP {response.status}"
+                    LOGGER.warning(
+                        "%s for %s: %s",
+                        self.last_error,
+                        _loggable_url(url),
+                        body.strip()[:200] or "(no body)",
+                    )
                     return None
-                return await response.text()
+                return body
         except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-            LOGGER.debug("Plex request failed (%s): %s", url, exc)
+            self.last_error = f"Plex is not reachable: {exc}"
+            LOGGER.warning("Plex request failed (%s): %s", _loggable_url(url), exc)
             return None
 
     # ------------------------------------------------------------------
@@ -243,10 +318,24 @@ class PlexClient:
         path = container_key if container_key.startswith("/") else f"/{container_key}"
         if "window=" not in path:
             path += ("&" if "?" in path else "?") + "window=200"
-        headers = {"Accept": "application/xml"}
-        if client_id:
-            headers["X-Plex-Client-Identifier"] = client_id
-        body = await self._get(server.url(path), headers)
+        body = await self._get(server.url(path), _xml_headers(client_id))
+        if body is None:
+            return PlayQueue()
+        return parse_play_queue(body)
+
+    async def metadata(
+        self, server: PlexServer, key: str, client_id: str = ""
+    ) -> PlayQueue:
+        """One library item, read directly, as a queue of its own.
+
+        The fallback for when a play queue cannot be read - an expired queue, a
+        server that answered oddly.  Playing the one track the controller named
+        is a great deal better than playing nothing and saying why.
+        """
+        if not server.usable or not key:
+            return PlayQueue()
+        path = key if key.startswith("/") else f"/library/metadata/{key}"
+        body = await self._get(server.url(path), _xml_headers(client_id))
         if body is None:
             return PlayQueue()
         return parse_play_queue(body)
@@ -262,20 +351,25 @@ class PlexClient:
     ) -> str:
         """The URL a Sonos player should fetch for *track*.
 
-        ``original`` hands over the stored file, which is what you want when the
-        library is already in a format Sonos plays - no transcode, no loss, no
-        load on the server.  A file Sonos cannot take is transcoded even under
-        ``original``, because the alternative is a speaker that simply refuses
-        to play it.
+        Under ``original`` - the default, and the one to leave alone - a file
+        the speaker can take is handed over exactly as Plex stores it: 16/44.1,
+        16/48, 24/44.1 and 24/48 all arrive bit-perfect, with nothing decoding
+        or re-encoding anywhere between the library and the speaker.
+
+        Only a file the speaker would refuse is touched, and then as gently as
+        possible: a 24/96 or 24/192 master is brought down to 24/48 and stays
+        **lossless FLAC**.  Dropping such a track to MP3 would be a far bigger
+        loss than the resample, and dropping it entirely is no use to anyone.
         """
-        wants_transcode = stream_format in ("mp3", "flac") or not track.sonos_native
-        if not wants_transcode:
+        if stream_format == "mp3":
+            return self.transcode_url(server, track, "mp3", max_bitrate_kbps, session_id)
+        if stream_format == "flac":
+            return self.transcode_url(server, track, "flac", 0, session_id)
+
+        # original
+        if track.sonos_native:
             return server.url(track.part_key)
-        codec = "flac" if stream_format == "flac" else "mp3"
-        # A lossless target has nothing useful to say about bitrate, and Plex
-        # treats a ceiling as an instruction to re-encode lossy.
-        bitrate = max_bitrate_kbps if codec == "mp3" else 0
-        return self.transcode_url(server, track, codec, bitrate, session_id)
+        return self.transcode_url(server, track, "flac", 0, session_id)
 
     def transcode_url(
         self,
@@ -297,6 +391,11 @@ class PlexClient:
             "musicBitrate": max_bitrate_kbps or "",
             "session": session_id or "",
         }
+        if codec == "flac":
+            # Telling the server what the *client* can take is how a Plex
+            # transcode is steered.  Without these the server is free to hand
+            # back 24/192 FLAC, which is exactly what the speaker cannot play.
+            params["X-Plex-Client-Profile-Extra"] = client_profile_extra()
         suffix = "flac" if codec == "flac" else "mp3"
         return server.url(f"/music/:/transcode/universal/start.{suffix}", **params)
 

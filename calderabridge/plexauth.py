@@ -193,10 +193,13 @@ class PlexAccount:
 
     # -- linking --------------------------------------------------------
     async def request_pin(self) -> LinkCode:
-        """Claim a PIN for the user to enter at plex.tv/link."""
-        status, body = await self._request(
-            "POST", f"{PLEX_TV}/api/v2/pins?strong=true", token=""
-        )
+        """Claim a PIN for the user to enter at plex.tv/link.
+
+        Deliberately *not* a "strong" PIN.  Asking for one gets a long random
+        string meant for an app that pastes it programmatically; the box at
+        plex.tv/link takes the short four-character kind, and nothing else.
+        """
+        status, body = await self._request("POST", f"{PLEX_TV}/api/v2/pins", token="")
         if status not in (200, 201) or not isinstance(body, dict):
             raise PlexAuthError(f"plex.tv would not issue a code (HTTP {status})")
         return LinkCode(

@@ -220,12 +220,15 @@ class FakePlex:
         self.timelines: list[dict[str, str]] = []
         self.requests: list[str] = []
         self.transcode_ok = True
+        self.metadata_ok = True
+        self.queue_ok = True
         self.port = 0
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
         app = web.Application()
         app.router.add_get("/playQueues/{pq}", self._play_queue)
+        app.router.add_get("/library/metadata/{key}", self._metadata)
         app.router.add_get("/:/timeline", self._timeline)
         app.router.add_get("/library/parts/{rest:.*}", self._part)
         app.router.add_get("/music/:/transcode/universal/{rest:.*}", self._transcode)
@@ -251,8 +254,25 @@ class FakePlex:
 
     async def _play_queue(self, request: web.Request) -> web.Response:
         self.requests.append(str(request.rel_url))
+        if not self.queue_ok:
+            return web.Response(status=404, text="play queue not found")
         return web.Response(
             text=play_queue_xml(self.tracks, **self.track_kwargs), content_type="text/xml"
+        )
+
+    async def _metadata(self, request: web.Request) -> web.Response:
+        """One library item, the way a server answers /library/metadata/<id>."""
+        self.requests.append(str(request.rel_url))
+        if self.metadata_ok is False:
+            return web.Response(status=404, text="not found")
+        return web.Response(
+            text=(
+                '<?xml version="1.0" encoding="utf-8"?>\n'
+                '<MediaContainer size="1">'
+                + track_xml(1, **self.track_kwargs)
+                + "</MediaContainer>"
+            ),
+            content_type="text/xml",
         )
 
     async def _timeline(self, request: web.Request) -> web.Response:

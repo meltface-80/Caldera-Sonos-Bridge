@@ -233,7 +233,7 @@ async def handle_playback(request: web.Request) -> web.Response:
 
     LOGGER.debug("%s: %s %s", player.zone.name, command, _loggable(params))
     try:
-        await _dispatch(player, command, params)
+        await _dispatch(player, command, params, dict(request.headers))
     except Exception:
         LOGGER.exception("%s: %s failed", player.zone.name, command)
         return _xml(
@@ -244,9 +244,14 @@ async def handle_playback(request: web.Request) -> web.Response:
     return _ok(player)
 
 
-async def _dispatch(player: RoomPlayer, command: str, params: dict[str, str]) -> None:
+async def _dispatch(
+    player: RoomPlayer,
+    command: str,
+    params: dict[str, str],
+    headers: dict[str, str] | None = None,
+) -> None:
     if command == "playMedia":
-        await player.play_media(params)
+        await player.play_media(params, headers)
     elif command == "play":
         await player.play()
     elif command == "pause":

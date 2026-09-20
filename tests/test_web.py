@@ -284,3 +284,32 @@ async def test_a_room_icon_is_served_as_png(client, player):
 async def test_an_unknown_room_or_size_is_a_404(client, player):
     assert (await client.get("/room/RINCON_NOPE/icon.svg")).status == 404
     assert (await client.get(f"/room/{player.zone.uid}/icon/999.png")).status == 404
+
+
+# ----------------------------------------------------------------------
+# Fitting a phone
+# ----------------------------------------------------------------------
+async def test_every_room_cell_labels_itself(client):
+    body = await (await client.get("/")).text()
+    # With the columns gone on a narrow screen, the label is all that is left
+    # to say what a value means.
+    for label in ("Sonos", "Coordinator", "State", "Now playing", "Volume"):
+        assert f'data-label="{label}"' in body
+
+
+async def test_the_page_has_a_phone_breakpoint(client):
+    body = await (await client.get("/")).text()
+    assert "@media (max-width: 640px)" in body
+    assert "thead { display: none; }" in body
+    assert "overflow-x: hidden" in body
+
+
+async def test_the_link_code_cannot_break_the_layout(client):
+    body = await (await client.get("/")).text()
+    assert "overflow-wrap: anywhere" in body
+
+
+async def test_the_empty_state_is_not_given_a_stray_label(client, config):
+    async with TestClient(TestServer(create_app(StubBridge(config)))) as empty:
+        body = await (await empty.get("/")).text()
+        assert "class=empty" in body

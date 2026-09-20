@@ -21,7 +21,7 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 
 BRIDGE_NAME = "Caldera Sonos Bridge"
-BRIDGE_VERSION = "1.0.0"
+BRIDGE_VERSION = "0.1.0"
 
 # Stable namespace so a given Sonos player always maps to the same Plex machine
 # identifier, across restarts and reinstalls.  Plex clients remember a player by

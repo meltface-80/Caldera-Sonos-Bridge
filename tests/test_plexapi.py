@@ -33,12 +33,22 @@ def test_parse_play_queue_survives_rubbish():
     assert parse_play_queue("<MediaContainer/>").tracks == []
 
 
-def test_tracks_without_a_part_are_skipped():
+def test_a_track_without_a_part_is_kept_for_the_transcoder():
+    # Dropping these quietly is what turns one odd item into a whole queue that
+    # "returned nothing playable"; the transcoder addresses them by metadata key.
     xml = (
         '<MediaContainer playQueueID="1">'
-        '<Track ratingKey="1" title="No media"/>'
+        '<Track ratingKey="1" key="/library/metadata/1" title="No media"/>'
         "</MediaContainer>"
     )
+    tracks = parse_play_queue(xml).tracks
+    assert len(tracks) == 1
+    assert tracks[0].title == "No media"
+    assert not tracks[0].sonos_native  # nothing to hand over directly
+
+
+def test_an_item_with_no_identity_at_all_is_skipped():
+    xml = '<MediaContainer playQueueID="1"><Track title="Nothing"/></MediaContainer>'
     assert parse_play_queue(xml).tracks == []
 
 
@@ -61,17 +71,43 @@ def test_server_url_appends_to_an_existing_query():
     assert "?own=1&" in server.url("/playQueues/1?own=1")
 
 
+def native(**kwargs) -> PlexTrack:
+    return PlexTrack(part_key="/library/parts/1/2/file.x", **kwargs)
+
+
 def test_sonos_native_formats():
-    assert PlexTrack(container="flac", sample_rate=44100, bit_depth=16).sonos_native
-    assert PlexTrack(container="mp3").sonos_native
-    assert PlexTrack(container="m4a").sonos_native
-    assert not PlexTrack(container="dsf").sonos_native
-    assert not PlexTrack(container="wma").sonos_native
+    assert native(container="flac", sample_rate=44100, bit_depth=16).sonos_native
+    assert native(container="mp3").sonos_native
+    assert native(container="m4a").sonos_native
+    assert not native(container="dsf").sonos_native
+    assert not native(container="wma").sonos_native
 
 
-def test_high_resolution_files_are_not_native():
-    assert not PlexTrack(container="flac", sample_rate=192000, bit_depth=24).sonos_native
-    assert not PlexTrack(container="flac", sample_rate=44100, bit_depth=32).sonos_native
+def test_every_resolution_within_the_ceiling_plays_bit_perfect():
+    # 16/44.1, 16/48, 24/44.1 and 24/48 are handed over untouched.
+    for rate in (44100, 48000):
+        for depth in (16, 24):
+            track = native(container="flac", sample_rate=rate, bit_depth=depth)
+            assert track.sonos_native, f"{depth}/{rate} should play as stored"
+            assert not track.too_high_resolution
+
+
+def test_above_the_ceiling_is_not_native():
+    assert native(container="flac", sample_rate=88200, bit_depth=24).too_high_resolution
+    assert native(container="flac", sample_rate=96000, bit_depth=24).too_high_resolution
+    assert native(container="flac", sample_rate=192000, bit_depth=24).too_high_resolution
+    assert native(container="flac", sample_rate=44100, bit_depth=32).too_high_resolution
+    assert not native(container="flac", sample_rate=192000).sonos_native
+
+
+def test_a_resolution_plex_did_not_report_is_assumed_playable():
+    # Guessing "too high" on missing metadata would transcode a whole library
+    # that never needed it.
+    assert native(container="flac").sonos_native
+
+
+def test_a_track_with_no_part_is_never_native():
+    assert not PlexTrack(container="flac", sample_rate=44100).sonos_native
 
 
 async def test_stream_url_sends_the_original_file_by_default(plex_client):
@@ -151,3 +187,80 @@ async def test_playable_checks_the_transcoder(plex_client, fake_plex):
     assert await plex_client.playable(url)
     fake_plex.transcode_ok = False
     assert not await plex_client.playable(url)
+
+
+# ----------------------------------------------------------------------
+# Resampling policy
+# ----------------------------------------------------------------------
+async def test_hi_res_is_resampled_to_lossless_flac_not_mp3(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(
+        play_queue_xml(1, sample_rate=192000, bit_depth=24)
+    ).tracks[0]
+
+    url = plex_client.stream_url(server, track, "original")
+    # Dropping a 24/192 master to MP3 would be a far bigger loss than the
+    # resample it actually needs.
+    assert "start.flac" in url
+    assert "audioCodec=flac" in url
+    assert "start.mp3" not in url
+
+
+async def test_the_resample_target_is_pinned_to_24_48(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(
+        play_queue_xml(1, sample_rate=96000, bit_depth=24)
+    ).tracks[0]
+
+    url = plex_client.stream_url(server, track, "original")
+    from urllib.parse import parse_qs, urlparse
+
+    profile = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
+    assert "audio.samplingRate" in profile
+    assert "value=48000" in profile
+    assert "audio.bitDepth" in profile
+    assert "value=24" in profile
+    assert "isRequired=true" in profile
+
+
+async def test_within_the_ceiling_nothing_is_transcoded(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    for rate in (44100, 48000):
+        for depth in (16, 24):
+            track = parse_play_queue(
+                play_queue_xml(1, sample_rate=rate, bit_depth=depth)
+            ).tracks[0]
+            url = plex_client.stream_url(server, track, "original")
+            assert "/transcode/" not in url, f"{depth}/{rate} should be bit-perfect"
+            assert "/library/parts/" in url
+
+
+async def test_a_track_with_no_part_is_transcoded_rather_than_dropped(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = PlexTrack(rating_key="7", key="/library/metadata/7")
+
+    url = plex_client.stream_url(server, track, "original")
+    assert "/transcode/" in url
+    assert "path=%2Flibrary%2Fmetadata%2F7" in url
+
+
+async def test_mp3_is_only_chosen_when_it_is_asked_for(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+
+    assert "start.mp3" in plex_client.stream_url(server, track, "mp3")
+    assert "start.flac" in plex_client.stream_url(server, track, "flac")
+
+
+# ----------------------------------------------------------------------
+# Diagnosing a failure
+# ----------------------------------------------------------------------
+async def test_a_refused_request_is_reported(plex_client, fake_plex):
+    server = fake_plex.server()
+    server.token = ""  # unusable, so nothing is attempted
+    assert (await plex_client.play_queue(server, "/playQueues/1")).tracks == []
+
+
+async def test_metadata_reads_a_single_item(plex_client, fake_plex):
+    queue = await plex_client.metadata(fake_plex.server(), "/library/metadata/101")
+    assert queue.tracks

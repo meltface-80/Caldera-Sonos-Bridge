@@ -21,6 +21,7 @@ class FakePlexTv:
         self.devices: dict[str, str] = {}
         self.pin_exists = True
         self.registered: list[str] = []
+        self.pin_query = ""
         self.port = 0
         self._server: TestServer | None = None
 
@@ -45,6 +46,13 @@ class FakePlexTv:
         return f"http://127.0.0.1:{self.port}"
 
     async def _pin(self, request):
+        self.pin_query = request.query_string
+        # plex.tv issues a long random string when asked for a "strong" PIN,
+        # and a four-character one otherwise.
+        if request.query.get("strong") == "true":
+            return web.json_response(
+                {"id": 555, "code": "g4q0h6c134i8zmuqe8iv9kzx8"}, status=201
+            )
         return web.json_response({"id": 555, "code": "WXYZ"}, status=201)
 
     async def _pin_status(self, request):
@@ -230,3 +238,13 @@ async def test_servers_are_listed_for_the_page(account, plex_tv):
     account.identity.token = "tok-999"
     servers = await account.servers()
     assert [s["name"] for s in servers] == ["Study PMS"]
+
+
+async def test_the_link_code_is_the_short_kind_plex_tv_link_accepts(account, plex_tv):
+    code = await account.request_pin()
+
+    # The box at plex.tv/link takes four characters and nothing else; asking
+    # for a "strong" PIN gets a long string that cannot be typed into it.
+    assert "strong" not in plex_tv.pin_query
+    assert len(code.code) == 4
+    assert code.code.isalnum()
