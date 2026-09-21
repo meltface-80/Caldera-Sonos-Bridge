@@ -251,7 +251,7 @@ class FakePlex:
         app.router.add_get("/library/metadata/{key}", self._metadata)
         app.router.add_get("/:/timeline", self._timeline)
         app.router.add_get("/library/parts/{rest:.*}", self._part)
-        app.router.add_get("/music/:/transcode/universal/{rest:.*}", self._transcode)
+        app.router.add_get("/audio/:/transcode/universal/{rest:.*}", self._transcode)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -321,18 +321,25 @@ class FakePlex:
     async def _transcode(self, request: web.Request) -> web.Response:
         self.requests.append(str(request.rel_url))
         self.probe_headers.append(dict(request.headers))
-        rest = request.match_info["rest"]
         if not self.transcode_ok:
             return web.Response(status=500, text="no transcoder")
-        if rest.startswith("start.flac") and not self.flac_ok:
-            return web.Response(status=404, text="no such endpoint")
-        kind = "audio/flac" if rest.startswith("start.flac") else "audio/mpeg"
+        # The output format is named by the profile the client declares, not
+        # by the path - which is how a real universal transcode works.
+        lossless = "container=flac" in request.query.get(
+            "X-Plex-Client-Profile-Extra", ""
+        )
+        if lossless and not self.flac_ok:
+            return web.Response(status=400, text="no conversion profile")
+        kind = "audio/flac" if lossless else "audio/mpeg"
         return web.Response(body=b"\x00\x01audio", content_type=kind)
 
-    def transcode_requests(self, suffix: str) -> list[str]:
-        """Every transcode request for one output format."""
+    def transcode_requests(self, container: str) -> list[str]:
+        """Every transcode request that asked for one output format."""
         return [
-            r for r in self.requests if f"/music/:/transcode/universal/{suffix}" in r
+            r
+            for r in self.requests
+            if "/audio/:/transcode/universal/start" in r
+            and f"container%3D{container}" in r
         ]
 
 
