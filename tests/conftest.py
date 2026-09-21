@@ -200,8 +200,19 @@ def track_xml(
     )
 
 
-def play_queue_xml(count: int = 3, selected: int = 1, **track_kwargs) -> str:
-    tracks = "".join(track_xml(i, **track_kwargs) for i in range(1, count + 1))
+def bare_track_xml(index: int, **_) -> str:
+    """A queue entry with no Media or Part - which some servers return."""
+    return (
+        f'<Track ratingKey="{100 + index}" key="/library/metadata/{100 + index}"'
+        f' playQueueItemID="{900 + index}" title="Track {index}"'
+        f' grandparentTitle="An Artist" parentTitle="An Album" index="{index}"'
+        f' duration="240000"/>'
+    )
+
+
+def play_queue_xml(count: int = 3, selected: int = 1, bare: bool = False, **track_kwargs) -> str:
+    render = bare_track_xml if bare else track_xml
+    tracks = "".join(render(i, **track_kwargs) for i in range(1, count + 1))
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         f'<MediaContainer size="{count}" playQueueID="4823" playQueueVersion="3"'
@@ -220,6 +231,10 @@ class FakePlex:
         self.timelines: list[dict[str, str]] = []
         self.requests: list[str] = []
         self.transcode_ok = True
+        #: Serve a play queue with no Media/Part, as some servers do.
+        self.bare_queue = False
+        #: Headers seen on transcode requests, for checking the probe.
+        self.probe_headers: list[dict] = []
         #: Some server builds do not answer the lossless endpoint at all.
         self.flac_ok = True
         self.metadata_ok = True
@@ -259,7 +274,8 @@ class FakePlex:
         if not self.queue_ok:
             return web.Response(status=404, text="play queue not found")
         return web.Response(
-            text=play_queue_xml(self.tracks, **self.track_kwargs), content_type="text/xml"
+            text=play_queue_xml(self.tracks, bare=self.bare_queue, **self.track_kwargs),
+            content_type="text/xml",
         )
 
     async def _metadata(self, request: web.Request) -> web.Response:
@@ -287,6 +303,7 @@ class FakePlex:
 
     async def _transcode(self, request: web.Request) -> web.Response:
         self.requests.append(str(request.rel_url))
+        self.probe_headers.append(dict(request.headers))
         rest = request.match_info["rest"]
         if not self.transcode_ok:
             return web.Response(status=500, text="no transcoder")
