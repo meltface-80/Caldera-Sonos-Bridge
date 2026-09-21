@@ -148,6 +148,10 @@ class Docker:
             raise UpdateError("Docker described this container in a way I cannot read")
         return body
 
+    async def containers(self) -> list[dict]:
+        body = await self._ok("GET", "/containers/json")
+        return [c for c in body if isinstance(c, dict)] if isinstance(body, list) else []
+
     async def image(self, ref: str) -> dict:
         body = await self._ok("GET", f"/images/{ref}/json")
         return body if isinstance(body, dict) else {}
@@ -175,22 +179,66 @@ class Docker:
             await self._ok("DELETE", f"/containers/{container}?force=1&v=0")
 
 
-def own_container_id() -> str:
-    """This container's id, as seen from inside it.
+def _read(path: str) -> str:
+    with contextlib.suppress(OSError):
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    return ""
 
-    ``HOSTNAME`` is the short id unless someone passed ``--hostname``, so the
-    control files are checked first and it is only the fallback.
+
+def container_candidates() -> list[str]:
+    """Everything this container might be called, best guess first.
+
+    Not one answer, because none of them is reliable on its own.  The mount
+    table usually carries the id, but only where Docker keeps its data - and
+    that is not always under ``/docker``; DietPi, for one, moves it.
+    ``/proc/self/cgroup`` carried it under cgroup v1 and says nothing under
+    v2.  ``HOSTNAME`` is the short id right up until the container runs with
+    host networking, when it is the *host's* name instead - which this bridge
+    always does.
+
+    So they are all offered, and the caller asks Docker which one is real.
     """
-    for path, pattern in (
-        ("/proc/self/mountinfo", r"/docker/containers/([0-9a-f]{64})"),
-        ("/proc/self/cgroup", r"[0-9a-f]{64}"),
-    ):
-        with contextlib.suppress(OSError):
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-            match = re.search(pattern, text)
-            if match:
-                return match.group(1) if match.groups() else match.group(0)
-    return os.environ.get("HOSTNAME", "")
+    found: list[str] = []
+
+    def offer(value: str) -> None:
+        if value and value not in found:
+            found.append(value)
+
+    mountinfo = _read("/proc/self/mountinfo")
+    # Wherever Docker's data root lives, a container's own files sit under
+    # <root>/containers/<id>/, so match on that rather than an absolute path.
+    for match in re.finditer(r"/containers/([0-9a-f]{64})", mountinfo):
+        offer(match.group(1))
+    for match in re.finditer(r"[0-9a-f]{64}", _read("/proc/self/cgroup")):
+        offer(match.group(0))
+
+    offer(os.environ.get("CONTAINER_NAME", "").strip())
+    offer(os.environ.get("HOSTNAME", "").strip())
+    return found
+
+
+def config_volume(mountinfo: str = "") -> str:
+    """The name of the volume mounted at ``/config``, if it is a named one.
+
+    The last resort for working out which container this is: the mount table
+    names the volume even when it does not name the container, and a volume
+    belongs to one container here.
+    """
+    text = mountinfo or _read("/proc/self/mountinfo")
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[4] != "/config":
+            continue
+        match = re.search(r"/volumes/([^/]+)/_data", fields[3])
+        if match:
+            return match.group(1)
+    return ""
+
+
+def own_container_id() -> str:
+    """The best single guess, for callers that cannot ask Docker."""
+    candidates = container_candidates()
+    return candidates[0] if candidates else ""
 
 
 def replacement_payload(inspected: dict, image: str) -> dict:
@@ -230,12 +278,70 @@ class Updater:
         self._session = session
         self.docker = docker or Docker()
         self.container_id = container_id or own_container_id()
+        #: Set once Docker has confirmed which container this actually is.
+        self._confirmed = ""
         self.last_check: str = ""
         self.last_error: str = ""
         self.available = False
         self.latest_digest = ""
 
     # ------------------------------------------------------------------
+    async def whoami(self) -> str:
+        """Which container this is, confirmed by Docker rather than guessed.
+
+        Every candidate is offered to Docker and the first it recognises wins.
+        Taking the best guess on trust is how ``HOSTNAME`` under host
+        networking became a request to update a container named after the
+        machine.
+        """
+        if self._confirmed:
+            return self._confirmed
+
+        tried = container_candidates()
+        if self.container_id and self.container_id not in tried:
+            tried.insert(0, self.container_id)
+
+        for candidate in tried:
+            with contextlib.suppress(UpdateError):
+                await self.docker.inspect(candidate)
+                self._confirmed = candidate
+                return candidate
+
+        found = await self._by_config_volume()
+        if found:
+            self._confirmed = found
+            return found
+
+        raise UpdateError(
+            "Cannot work out which container this is. Docker did not recognise "
+            + (", ".join(tried) if tried else "any name for it")
+            + ". Add -e CONTAINER_NAME=caldera-sonos-bridge (or whatever you named "
+            "it) to the docker run line."
+        )
+
+    async def _by_config_volume(self) -> str:
+        """Find this container by the volume it has mounted at ``/config``.
+
+        The mount table names the volume even where it does not name the
+        container, and that volume belongs to exactly one container.
+        """
+        volume = config_volume()
+        if not volume:
+            return ""
+        with contextlib.suppress(UpdateError):
+            listed = await self.docker.containers()
+            for entry in listed:
+                for mount in entry.get("Mounts") or []:
+                    if (
+                        mount.get("Destination") == "/config"
+                        and mount.get("Name") == volume
+                    ):
+                        LOGGER.info(
+                            "Identified this container by its %s volume", volume
+                        )
+                        return str(entry.get("Id") or "")
+        return ""
+
     async def registry_digest(self, ref: str) -> str:
         """The digest a registry currently has for *ref*.
 
@@ -293,11 +399,11 @@ class Updater:
         }
         if not self.docker.available:
             state["reason"] = self.docker.obstacle
-        if not self.container_id:
+        if not self.docker.available:
             return state
 
         try:
-            inspected = await self.docker.inspect(self.container_id)
+            inspected = await self.docker.inspect(await self.whoami())
         except UpdateError as exc:
             state["error"] = str(exc)
             return state
@@ -320,7 +426,7 @@ class Updater:
 
         self.last_error = ""
         try:
-            inspected = await self.docker.inspect(self.container_id)
+            inspected = await self.docker.inspect(await self.whoami())
             image = str((inspected.get("Config") or {}).get("Image") or "")
             if not image:
                 raise UpdateError("this container does not name an image")
@@ -352,10 +458,8 @@ class Updater:
         """
         if not self.docker.available:
             raise UpdateError(self.docker.obstacle)
-        if not self.container_id:
-            raise UpdateError("Cannot tell which container this is")
-
-        inspected = await self.docker.inspect(self.container_id)
+        container = await self.whoami()
+        inspected = await self.docker.inspect(container)
         image = str((inspected.get("Config") or {}).get("Image") or "")
         name = str(inspected.get("Name") or "").lstrip("/")
         if not image or not name:
@@ -368,14 +472,14 @@ class Updater:
         # back, because the bridge is otherwise left with no container at all.
         parked = f"{name}{OLD_SUFFIX}"
         await self.docker.remove(parked)  # a leftover from a previous attempt
-        await self.docker.rename(self.container_id, parked)
+        await self.docker.rename(container, parked)
         try:
             payload = replacement_payload(inspected, image)
             new_id = await self.docker.create(name, payload)
         except UpdateError:
             LOGGER.error("Update failed; putting %s back as it was", name)
             with contextlib.suppress(UpdateError):
-                await self.docker.rename(self.container_id, name)
+                await self.docker.rename(container, name)
             raise
 
         # The successor exists and is sound.  Let go of the ports, then start
@@ -393,7 +497,7 @@ class Updater:
             )
             await self.docker.remove(new_id)
             with contextlib.suppress(UpdateError):
-                await self.docker.rename(self.container_id, name)
+                await self.docker.rename(container, name)
             raise
 
         LOGGER.info("%s is now running the new image; this one is standing down", name)

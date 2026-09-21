@@ -127,6 +127,7 @@ Tick **Install updates automatically** to have it check every six hours and appl
 
 | Variable | Default | | Purpose |
 | --- | --- | --- | --- |
+| `CONTAINER_NAME` | auto | | What this container is called, if the bridge cannot work it out. Only needed on hosts where neither the mount table nor `HOSTNAME` gives it away — the Updates card says so when it happens. |
 | `UPDATE_CHECK` | `true` | | Look for newer images at all. |
 | `AUTO_UPDATE` | `false` | ● | Install what it finds, without asking. |
 | `UPDATE_CHECK_INTERVAL` | `21600` | | Seconds between checks. |
