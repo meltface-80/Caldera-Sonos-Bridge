@@ -555,19 +555,40 @@ async def test_the_profile_extra_survives_the_query_string(plex_client):
     assert parse_qs(urlparse(url).query)["path"] == ["/library/metadata/101"]
 
 
-async def test_the_identity_does_not_claim_to_be_sonos(plex_client):
+async def test_the_identity_names_a_device_plex_has_a_profile_for(plex_client):
     from urllib.parse import parse_qs, urlparse
 
     server = PlexServer(address="10.0.0.5", token="tok")
     track = parse_play_queue(play_queue_xml(1)).tracks[0]
     query = parse_qs(urlparse(plex_client.transcode_url(server, track)).query)
 
-    # Saying "Sonos" matches Plex's own built-in Sonos profile, which offers
-    # no music over plain HTTP and, being already furnished, swallows the
-    # transcode target this request is trying to add. Unrecognised is better:
-    # it lands on Generic, which takes the declared target as given.
-    assert "Sonos" not in query.get("X-Plex-Device", [""])[0]
-    assert "X-Plex-Model" not in query
+    # Plex does not fall back to a generic profile. A device it does not know
+    # gets "unable to find a matching profile" and a 400, before the media is
+    # even looked at. This has to be in the query string and not only in a
+    # header, because the speaker fetches the URL itself and sends no headers:
+    # a header-only identity works from the bridge and fails from the speaker,
+    # which is the most misleading way for this to be wrong.
+    assert query["X-Plex-Device"] == ["Sonos"]
+    assert query["X-Plex-Model"] == ["sonos"]
+
+
+async def test_each_track_carries_its_own_plex_session_identifier(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    queue = parse_play_queue(play_queue_xml(3, sample_rate=192000, bit_depth=24))
+
+    # Plex keys a streaming resource on X-Plex-Session-Identifier, falling
+    # back to the client identifier when there is none - so without this the
+    # track Sonos prepares next ends the one that is playing.
+    seen = set()
+    for track in queue.tracks:
+        choice = plex_client.stream_candidates(
+            server, track, "original", 0, "caldera-room", "room-1"
+        )[0]
+        query = parse_qs(urlparse(choice.url).query)
+        seen.add(query["X-Plex-Session-Identifier"][0])
+    assert len(seen) == len(queue.tracks)
 
 
 async def test_each_track_gets_a_transcode_session_of_its_own(plex_client):
@@ -588,6 +609,40 @@ async def test_each_track_gets_a_transcode_session_of_its_own(plex_client):
     # one id per room would have each track it prepares cut the stream out
     # from under the track that is playing.
     assert len(sessions) == len(queue.tracks)
+
+
+async def test_a_format_that_works_is_not_re_checked_for_every_track(
+    plex_client, fake_plex
+):
+    server = fake_plex.server()
+    queue = parse_play_queue(play_queue_xml(4, sample_rate=192000, bit_depth=24))
+
+    for track in queue.tracks:
+        choice = plex_client.stream_candidates(
+            server, track, "original", 0, "room", "room-1"
+        )[0]
+        assert await plex_client.servable(server, choice, "room-1")
+
+    # Each check starts a transcode session that the next one ends, and what
+    # it finds - whether the server has a profile to transcode for this
+    # client - is the same answer for every track in the queue.
+    assert len(fake_plex.transcode_requests("flac")) == 1
+
+
+async def test_a_format_that_failed_is_tried_again(plex_client, fake_plex):
+    server = fake_plex.server()
+    track = parse_play_queue(
+        play_queue_xml(1, sample_rate=192000, bit_depth=24)
+    ).tracks[0]
+    choice = plex_client.stream_candidates(
+        server, track, "original", 0, "room", "room-1"
+    )[0]
+
+    fake_plex.transcode_ok = False
+    assert not await plex_client.servable(server, choice, "room-1")
+    # A server that was busy once is not a server that cannot.
+    fake_plex.transcode_ok = True
+    assert await plex_client.servable(server, choice, "room-1")
 
 
 async def test_no_invented_codec_parameter(plex_client):
