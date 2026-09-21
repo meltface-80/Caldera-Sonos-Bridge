@@ -432,19 +432,13 @@ class RoomPlayer:
                 await coordinator.set_next_av_transport_uri(next_uri, next_metadata)
 
     async def _track_uri(self, track: PlexTrack) -> tuple[str, str]:
-        """The URL Sonos should fetch, and the metadata that makes it accept it.
-
-        Every transcode is checked before a speaker is sent to it.  Sonos
-        reports a URL that gives it nothing as a bare stop, which is
-        indistinguishable from the track having ended, so a transcode the
-        server will not actually serve would look exactly like silent success.
-        """
+        """The URL Sonos should fetch, and the metadata that makes it accept it."""
         # A play queue does not always carry the file details for its tracks.
         # Without them every track looks like one that has to be transcoded,
         # whatever it actually is, so fetch them before deciding anything.
         await self._plex.fill_part(self.server, track, self.machine_identifier)
 
-        candidates = self._plex.stream_candidates(
+        choice = self._plex.stream_choice(
             self.server,
             track,
             self.config.stream_format,
@@ -452,47 +446,24 @@ class RoomPlayer:
             self._session_id,
             self.machine_identifier,
         )
-        if candidates[0].transcoded and self.config.stream_format == "original":
+        if not choice.transcoded:
+            # Said out loud because "is my library reaching the speakers
+            # untouched?" is the question this bridge exists to answer.
             LOGGER.info(
-                "%s: %r is %s, so it is transcoded rather than sent as stored",
+                "%s: %r sent as stored, %s - bit-perfect",
+                self.zone.name,
+                track.title,
+                _resolution(track),
+            )
+        elif self.config.stream_format == "original":
+            LOGGER.info(
+                "%s: %r is %s, so it is sent as %s",
                 self.zone.name,
                 track.title,
                 self._why_not_native(track),
+                choice.label,
             )
-
-        for index, choice in enumerate(candidates):
-            if not choice.transcoded:
-                # Said out loud because "is my library reaching the speakers
-                # untouched?" is the question this bridge exists to answer.
-                LOGGER.info(
-                    "%s: %r sent as stored, %s - bit-perfect",
-                    self.zone.name,
-                    track.title,
-                    _resolution(track),
-                )
-                return choice.url, self._metadata(choice.url, track, choice.mime)
-            if await self._plex.servable(self.server, choice, self.machine_identifier):
-                if index:
-                    LOGGER.info(
-                        "%s: the server would not serve %s for %r, using %s",
-                        self.zone.name,
-                        candidates[index - 1].label,
-                        track.title,
-                        choice.label,
-                    )
-                return choice.url, self._metadata(choice.url, track, choice.mime)
-
-        # Nothing answered.  Send the best one anyway rather than nothing at
-        # all: the speaker may yet manage what a single ranged request did not.
-        last = candidates[-1]
-        LOGGER.warning(
-            "%s: Plex served none of the stream formats tried for %r; sending %s "
-            "and hoping. Check the server's transcoder.",
-            self.zone.name,
-            track.title,
-            last.label,
-        )
-        return last.url, self._metadata(last.url, track, last.mime)
+        return choice.url, self._metadata(choice.url, track, choice.mime)
 
     @staticmethod
     def _why_not_native(track: PlexTrack) -> str:

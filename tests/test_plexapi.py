@@ -209,16 +209,6 @@ async def test_timeline_is_reported(plex_client, fake_plex):
     assert reported["ratingKey"] == "101"
 
 
-async def test_playable_checks_the_transcoder(plex_client, fake_plex):
-    server = fake_plex.server()
-    track = parse_play_queue(play_queue_xml(1)).tracks[0]
-    url = plex_client.transcode_url(server, track)
-
-    assert await plex_client.playable(url)
-    fake_plex.transcode_ok = False
-    assert not await plex_client.playable(url)
-
-
 # ----------------------------------------------------------------------
 # Resampling policy
 # ----------------------------------------------------------------------
@@ -501,11 +491,8 @@ async def test_every_candidate_carries_the_identity(plex_client):
         play_queue_xml(1, sample_rate=192000, bit_depth=24)
     ).tracks[0]
 
-    choices = plex_client.stream_candidates(server, track, "original", 0, "s", "room-1")
-    assert choices
-    for choice in choices:
-        assert "X-Plex-Client-Identifier=room-1" in choice.url
-        assert "X-Plex-Client-Identifier=room-1" in choice.probe_url
+    choice = plex_client.stream_choice(server, track, "original", 0, "s", "room-1")
+    assert "X-Plex-Client-Identifier=room-1" in choice.url
 
 
 async def test_a_transcode_url_declares_the_profile_to_transcode_for(plex_client):
@@ -611,9 +598,9 @@ async def test_each_track_carries_its_own_plex_session_identifier(plex_client):
     # track Sonos prepares next ends the one that is playing.
     seen = set()
     for track in queue.tracks:
-        choice = plex_client.stream_candidates(
+        choice = plex_client.stream_choice(
             server, track, "original", 0, "caldera-room", "room-1"
-        )[0]
+        )
         query = parse_qs(urlparse(choice.url).query)
         seen.add(query["X-Plex-Session-Identifier"][0])
     assert len(seen) == len(queue.tracks)
@@ -627,9 +614,9 @@ async def test_each_track_gets_a_transcode_session_of_its_own(plex_client):
 
     sessions = set()
     for track in queue.tracks:
-        choice = plex_client.stream_candidates(
+        choice = plex_client.stream_choice(
             server, track, "original", 0, "caldera-room", "room-1"
-        )[0]
+        )
         sessions.add(parse_qs(urlparse(choice.url).query)["session"][0])
 
     # A Plex transcode session belongs to one track, and starting a second on
@@ -637,40 +624,6 @@ async def test_each_track_gets_a_transcode_session_of_its_own(plex_client):
     # one id per room would have each track it prepares cut the stream out
     # from under the track that is playing.
     assert len(sessions) == len(queue.tracks)
-
-
-async def test_a_format_that_works_is_not_re_checked_for_every_track(
-    plex_client, fake_plex
-):
-    server = fake_plex.server()
-    queue = parse_play_queue(play_queue_xml(4, sample_rate=192000, bit_depth=24))
-
-    for track in queue.tracks:
-        choice = plex_client.stream_candidates(
-            server, track, "original", 0, "room", "room-1"
-        )[0]
-        assert await plex_client.servable(server, choice, "room-1")
-
-    # Each check starts a transcode session that the next one ends, and what
-    # it finds - whether the server has a profile to transcode for this
-    # client - is the same answer for every track in the queue.
-    assert len(fake_plex.transcode_requests("flac")) == 1
-
-
-async def test_a_format_that_failed_is_tried_again(plex_client, fake_plex):
-    server = fake_plex.server()
-    track = parse_play_queue(
-        play_queue_xml(1, sample_rate=192000, bit_depth=24)
-    ).tracks[0]
-    choice = plex_client.stream_candidates(
-        server, track, "original", 0, "room", "room-1"
-    )[0]
-
-    fake_plex.transcode_ok = False
-    assert not await plex_client.servable(server, choice, "room-1")
-    # A server that was busy once is not a server that cannot.
-    fake_plex.transcode_ok = True
-    assert await plex_client.servable(server, choice, "room-1")
 
 
 async def test_no_invented_codec_parameter(plex_client):

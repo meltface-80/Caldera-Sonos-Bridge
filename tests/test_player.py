@@ -532,7 +532,7 @@ async def hi_res_player(config, zone, fake_sonos, plex_client, fake_plex):
     )
 
 
-async def test_hi_res_uses_the_lossless_endpoint_when_the_server_serves_it(
+async def test_hi_res_is_handed_over_as_lossless_without_a_rehearsal(
     config, zone, fake_sonos, plex_client, fake_plex
 ):
     player = await hi_res_player(config, zone, fake_sonos, plex_client, fake_plex)
@@ -541,42 +541,19 @@ async def test_hi_res_uses_the_lossless_endpoint_when_the_server_serves_it(
     for uri, metadata in fake_sonos.queue:
         assert "container%3Dflac" in uri
         assert "audio/flac" in metadata
-    assert fake_plex.transcode_requests("flac")
+
+    # The bridge never fetches a transcode itself. Asking the server whether
+    # it would serve one starts a transcode of the very track about to play
+    # and then abandons it, and the speaker - arriving moments later for the
+    # same file, mid-teardown - would now and then get a stream that ended at
+    # once and move on to the next track.
+    assert fake_plex.transcode_requests("flac") == []
+    assert not [r for r in fake_plex.requests if "probe" in r]
 
 
-async def test_hi_res_falls_back_when_the_server_will_not_serve_lossless(
-    config, zone, fake_sonos, plex_client, fake_plex
-):
-    # A URL the server does not answer is, from the speaker's side, identical
-    # to a track that ended - so it has to be found here, not by silence.
-    fake_plex.flac_ok = False
-    player = await hi_res_player(config, zone, fake_sonos, plex_client, fake_plex)
+async def test_a_file_within_the_ceiling_never_touches_the_transcoder(player, fake_sonos, fake_plex):
     await player.play_media(play_params(fake_plex))
-
-    assert fake_sonos.queue, "the track should still play"
-    for uri, metadata in fake_sonos.queue:
-        assert "container%3Dmp3" in uri
-        assert "audio/mpeg" in metadata
-
-
-async def test_every_transcode_is_checked_before_a_speaker_is_sent_to_it(
-    config, zone, fake_sonos, plex_client, fake_plex
-):
-    player = await hi_res_player(config, zone, fake_sonos, plex_client, fake_plex)
-    await player.play_media(play_params(fake_plex))
-
-    # The check must not use the session the speaker will use: asking Plex for
-    # a session, abandoning it, then having Sonos ask for the same one is a
-    # good way to be handed a stream that has already been consumed.
-    probes = [r for r in fake_plex.requests if "probe" in r]
-    assert probes
-    for uri, _ in fake_sonos.queue:
-        assert "probe" not in uri
-
-
-async def test_a_file_within_the_ceiling_is_never_probed(player, fake_sonos, fake_plex):
-    await player.play_media(play_params(fake_plex))
-    # Nothing to check: the stored file is handed over as it is.
+    # Nothing to convert: the stored file is handed over as it is.
     assert not [r for r in fake_plex.requests if "transcode" in r]
 
 
@@ -639,19 +616,3 @@ async def test_the_reason_a_track_is_transcoded_is_stated(player):
     )
 
 
-async def test_the_probe_identifies_itself_to_plex(
-    config, zone, fake_sonos, plex_client, fake_plex
-):
-    from .conftest import StubTopology
-
-    fake_plex.track_kwargs = {"sample_rate": 192000, "bit_depth": 24}
-    player = RoomPlayer(
-        config, zone, StubTopology({zone.uid: zone}), fake_sonos, plex_client, 32701
-    )
-    await player.play_media(play_params(fake_plex))
-
-    # The transcoder identifies the client it transcodes for; a request
-    # carrying none of the Plex headers is refused, which looks from here
-    # exactly like a server that cannot transcode at all.
-    assert fake_plex.probe_headers
-    assert fake_plex.probe_headers[0].get("X-Plex-Client-Identifier")
