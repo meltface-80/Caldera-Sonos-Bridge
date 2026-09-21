@@ -233,10 +233,6 @@ class FakePlex:
         self.transcode_ok = True
         #: Serve a play queue with no Media/Part, as some servers do.
         self.bare_queue = False
-        #: Headers seen on transcode requests, for checking the probe.
-        self.probe_headers: list[dict] = []
-        #: Some server builds do not answer the lossless endpoint at all.
-        self.flac_ok = True
         self.metadata_ok = True
         #: The address this server claims for itself on /servers.
         self.servers_address = "127.0.0.1"
@@ -320,7 +316,6 @@ class FakePlex:
 
     async def _transcode(self, request: web.Request) -> web.Response:
         self.requests.append(str(request.rel_url))
-        self.probe_headers.append(dict(request.headers))
         if not self.transcode_ok:
             return web.Response(status=500, text="no transcoder")
         # The output format is named by the profile the client declares, not
@@ -328,8 +323,6 @@ class FakePlex:
         lossless = "container=flac" in request.query.get(
             "X-Plex-Client-Profile-Extra", ""
         )
-        if lossless and not self.flac_ok:
-            return web.Response(status=400, text="no conversion profile")
         kind = "audio/flac" if lossless else "audio/mpeg"
         return web.Response(body=b"\x00\x01audio", content_type=kind)
 

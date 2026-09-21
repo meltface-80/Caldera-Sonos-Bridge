@@ -214,30 +214,15 @@ class PlexServer:
         return f"{self.base_url}{path}{joiner}{urlencode(query)}"
 
 
-#: How long to wait for a transcode to produce its first byte.  A session has
-#: to start before there is anything to serve, and on a small machine that is
-#: not instant; treating slow as broken sends the speaker to the fallback for
-#: no reason.
-PREFLIGHT_TIMEOUT = 20.0
+#: What a hi-res track becomes when the lossy format is asked for and no
+#: ceiling is set.  High enough that the resample, not the codec, is the
+#: audible limit.
+MP3_FALLBACK_KBPS = 320
 
 #: How big a cover to ask the server for.  Sonos controllers show album art
 #: at around this on a phone, and the speaker never sees it at all - it is the
 #: app that fetches it - so there is no reason to be stingy or extravagant.
 ART_SIZE = 600
-
-#: What a hi-res track falls back to when the server will not serve lossless.
-#: High enough that the resample, not the codec, is the audible limit.
-MP3_FALLBACK_KBPS = 320
-
-
-def _probe(session_id: str) -> str:
-    """A session id for checking a transcode, distinct from the real one.
-
-    Checking and playing must not share a session: asking Plex for one, then
-    abandoning it, then having the speaker ask for the very same session is a
-    good way to be handed a stream that has already been consumed.
-    """
-    return f"{session_id or 'caldera'}-probe"
 
 
 def _track_session(session_id: str, track: PlexTrack) -> str:
@@ -258,7 +243,6 @@ class StreamChoice:
     """One way of sending a track to a speaker."""
 
     url: str
-    probe_url: str
     transcoded: bool
     label: str
     mime: str
@@ -439,9 +423,6 @@ class PlexClient:
         self._routes: dict[str, PlexServer] = {}
         #: File details fetched for tracks whose play queue entry lacked them.
         self._parts: dict[str, PlexTrack] = {}
-        #: Output formats a server has been seen to serve, so a queue is not
-        #: checked track by track.
-        self._formats: set[tuple[str, str]] = set()
         #: Why the last request failed, for the settings page to show.
         self.last_error = ""
 
@@ -601,7 +582,7 @@ class PlexClient:
         return parse_play_queue(body)
 
     # ------------------------------------------------------------------
-    def stream_candidates(
+    def stream_choice(
         self,
         server: PlexServer,
         track: PlexTrack,
@@ -609,68 +590,53 @@ class PlexClient:
         max_bitrate_kbps: int = 0,
         session_id: str = "",
         client_id: str = "",
-    ) -> list[StreamChoice]:
-        """Ways to send *track* to a speaker, best first.
-
-        More than one, because a transcode can only be *asked* for.  Not every
-        server build answers the lossless endpoint, and a URL that returns
-        nothing is indistinguishable, from the speaker's side, from a track
-        that simply ended - so there has to be something to fall back to.
+    ) -> StreamChoice:
+        """How to send *track* to a speaker.
 
         Under ``original`` a file the speaker can take is handed over exactly
         as Plex stores it: 16/44.1, 16/48, 24/44.1 and 24/48 all arrive
-        bit-perfect.  Only a file the speaker would refuse is touched, and then
-        as gently as possible - 24/96 and 24/192 come down to 24/48 and stay
-        lossless if the server will do it, and become high-bitrate MP3 if it
-        will not.  Either beats silence.
+        bit-perfect.  Only a file the speaker would refuse is touched, and
+        then as gently as possible - 24/96 and 24/192 come down to 24/48 and
+        stay lossless FLAC.
+
+        One way, not a ranked list.  There used to be a second, and a request
+        to Plex beforehand to find out whether the first would work; that
+        request started a transcode of the very track about to play and then
+        abandoned it, and the speaker - arriving moments later for the same
+        file, while the server was still tearing the other one down - would
+        now and then be handed a stream that ended at once and move on to the
+        next track.  A rehearsal that breaks the performance is worth less
+        than nothing.  A server that will not produce FLAC is a setting away
+        from MP3, and says so on the settings page.
         """
         session = _track_session(session_id, track)
-        lossless = StreamChoice(
+        if stream_format == "mp3":
+            return StreamChoice(
+                url=self.transcode_url(
+                    server,
+                    track,
+                    "mp3",
+                    max_bitrate_kbps or MP3_FALLBACK_KBPS,
+                    session,
+                    client_id,
+                ),
+                transcoded=True,
+                label=f"MP3 {max_bitrate_kbps or MP3_FALLBACK_KBPS}",
+                mime="audio/mpeg",
+            )
+        if stream_format == "original" and track.sonos_native:
+            return StreamChoice(
+                url=server.url(track.part_key),
+                transcoded=False,
+                label="the stored file",
+                mime=mime_for_uri(track.part_key),
+            )
+        return StreamChoice(
             url=self.transcode_url(server, track, "flac", 0, session, client_id),
-            probe_url=self.transcode_url(
-                server, track, "flac", 0, _probe(session), client_id
-            ),
             transcoded=True,
             label="FLAC 24/48",
             mime="audio/flac",
         )
-        lossy = StreamChoice(
-            url=self.transcode_url(
-                server,
-                track,
-                "mp3",
-                max_bitrate_kbps or MP3_FALLBACK_KBPS,
-                session,
-                client_id,
-            ),
-            probe_url=self.transcode_url(
-                server,
-                track,
-                "mp3",
-                max_bitrate_kbps or MP3_FALLBACK_KBPS,
-                _probe(session),
-                client_id,
-            ),
-            transcoded=True,
-            label=f"MP3 {max_bitrate_kbps or MP3_FALLBACK_KBPS}",
-            mime="audio/mpeg",
-        )
-
-        if stream_format == "mp3":
-            return [lossy]
-        if stream_format == "flac":
-            return [lossless, lossy]
-        if track.sonos_native:
-            return [
-                StreamChoice(
-                    url=server.url(track.part_key),
-                    probe_url="",
-                    transcoded=False,
-                    label="the stored file",
-                    mime=mime_for_uri(track.part_key),
-                )
-            ]
-        return [lossless, lossy]
 
     def stream_url(
         self,
@@ -681,10 +647,10 @@ class PlexClient:
         session_id: str = "",
         client_id: str = "",
     ) -> str:
-        """The preferred way to send *track*, without checking it works."""
-        return self.stream_candidates(
+        """The URL a speaker should fetch for *track*."""
+        return self.stream_choice(
             server, track, stream_format, max_bitrate_kbps, session_id, client_id
-        )[0].url
+        ).url
 
     def transcode_url(
         self,
@@ -749,68 +715,6 @@ class PlexClient:
             "X-Plex-Client-Profile-Extra": client_profile_extra(container),
         }
         return server.url("/audio/:/transcode/universal/start", **params)
-
-    async def servable(
-        self, server: PlexServer, choice: StreamChoice, client_id: str = ""
-    ) -> bool:
-        """Will this server serve *choice*, checking only once per format?
-
-        What a failed check finds is that the server has no profile to
-        transcode for this client, or no transcoder at all.  Neither is a
-        property of the track, so asking again for every track in a queue
-        only tells you the same thing - and each ask starts a transcode
-        session that the next one ends.  So a format that has worked is
-        taken as working.  A format that has not is checked again, because a
-        server that was busy once is not a server that cannot.
-        """
-        key = (server.base_url, choice.label)
-        if key in self._formats:
-            return True
-        if not await self.playable(choice.probe_url, client_id):
-            return False
-        self._formats.add(key)
-        return True
-
-    async def playable(self, url: str, client_id: str = "") -> bool:
-        """Will this URL actually serve audio?
-
-        Only used to check a transcode before a speaker is sent to it: Sonos
-        reports a failed fetch as a bare stop, which is indistinguishable from
-        the end of a track, so it is worth one request to find out here.
-
-        The Plex headers are not optional.  The transcoder identifies the
-        client it is transcoding *for*, and a request carrying none of them is
-        refused - which reads, from here, exactly like a server that cannot
-        transcode at all.  The wait is generous for the same reason: a
-        transcode session has to start before it has a byte to give, and on a
-        Pi that is not instant.
-        """
-        headers = {
-            "X-Plex-Client-Identifier": client_id or "caldera-sonos-bridge",
-            "X-Plex-Product": "Caldera Sonos Bridge",
-            "X-Plex-Platform": "Linux",
-            "X-Plex-Device": "Sonos",
-        }
-        try:
-            async with self._session.get(
-                url,
-                headers=headers,
-                ssl=self._ssl,
-                timeout=aiohttp.ClientTimeout(total=PREFLIGHT_TIMEOUT),
-            ) as response:
-                if response.status in (200, 206):
-                    return True
-                body = (await response.text())[:200].strip()
-                LOGGER.info(
-                    "Plex would not serve %s: HTTP %s %s",
-                    _loggable_url(url),
-                    response.status,
-                    body or "(no body)",
-                )
-                return False
-        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-            LOGGER.info("Plex would not serve %s: %s", _loggable_url(url), exc)
-            return False
 
     async def fill_part(
         self, server: PlexServer, track: PlexTrack, client_id: str = ""

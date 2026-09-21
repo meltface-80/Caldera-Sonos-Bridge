@@ -392,7 +392,9 @@ def _settings_form(status: dict) -> str:
                 "<code>original</code> is bit-perfect at 16/44.1, 16/48, 24/44.1 "
                 "and 24/48 - the file reaches the speaker exactly as Plex stores "
                 "it. Anything above 24/48 is resampled to 24/48 by your server "
-                "and stays lossless FLAC. The other two transcode everything.",
+                "and stays lossless FLAC. The other two transcode everything. "
+                "If hi-res tracks stay silent, your server will not produce "
+                "FLAC for this player: choose <code>mp3</code>.",
             ),
             f(
                 "max_bitrate_kbps",
