@@ -304,6 +304,84 @@ def test_a_plain_address_has_no_direct_route():
     assert PlexServer(address="192.168.0.57", token="tok").direct is None
 
 
+def test_lan_address_reads_an_ipv6_plex_direct_hostname():
+    from calderabridge.plexapi import lan_address
+
+    # The same scheme, with eight groups instead of four: a hostname has no
+    # room for the "::" shorthand, so the address is always written out.
+    assert lan_address(
+        "fde1-10fe-0c09-ec91-da9e-f3ff-fe87-a0ad"
+        ".491913271aa545628c79f9b0dfdaa645.plex.direct"
+    ) == "fde1:10fe:c09:ec91:da9e:f3ff:fe87:a0ad"
+
+
+def test_an_ipv6_direct_route_is_plain_http_with_brackets():
+    server = PlexServer(
+        address=(
+            "fde1-10fe-0c09-ec91-da9e-f3ff-fe87-a0ad"
+            ".491913271aa545628c79f9b0dfdaa645.plex.direct"
+        ),
+        port=32400,
+        protocol="https",
+        token="tok",
+    )
+    direct = server.direct
+    assert direct is not None
+    # Without the brackets this is not a URL at all, and every request the
+    # bridge makes to it fails before it leaves the process.
+    assert direct.base_url == "http://[fde1:10fe:c09:ec91:da9e:f3ff:fe87:a0ad]:32400"
+
+
+def test_a_group_that_is_not_hex_is_not_an_address():
+    from calderabridge.plexapi import lan_address
+
+    assert lan_address(f"1-2-3.{'a' * 32}.plex.direct") == ""
+    assert lan_address(f"zzzz-1-1-1-1-1-1-1.{'a' * 32}.plex.direct") == ""
+
+
+async def test_the_server_is_asked_which_ipv4_address_it_has(plex_client, fake_plex):
+    """``/servers`` is the server describing itself - nobody else knows."""
+    found = await plex_client.ipv4_route(fake_plex.server())
+
+    assert found is not None
+    assert found.address == "127.0.0.1"
+
+
+async def test_an_ipv6_route_is_swapped_for_the_ipv4_one(plex_client):
+    """Sonos players speak IPv4 only, so an IPv6 route is half a route.
+
+    The bridge can talk to Plex over IPv6 perfectly well; the speaker, which
+    has to fetch every track for itself, cannot.  So when the only address the
+    controller gave is an IPv6 one, the server is asked what else it has.
+    """
+
+    class OnANetworkWithBoth(type(plex_client)):
+        async def reachable(self, server):
+            return True
+
+        async def _get(self, url, headers=None):
+            return (
+                '<MediaContainer size="1">'
+                '<Server machineIdentifier="pms-abc" host="192.168.0.57"'
+                ' address="192.168.0.57" port="32400"/>'
+                "</MediaContainer>"
+            )
+
+    client = OnANetworkWithBoth(plex_client._session)
+    server = PlexServer(
+        machine_identifier="pms-abc",
+        address=f"fde1-10fe-0c09-ec91-da9e-f3ff-fe87-a0ad.{'a' * 32}.plex.direct",
+        port=32400,
+        protocol="https",
+        token="tok",
+    )
+
+    routed = await client.route(server)
+
+    assert routed.base_url == "http://192.168.0.57:32400"
+    assert routed.token == "tok"
+
+
 async def test_route_prefers_the_plain_lan_path(plex_client, fake_plex):
     # The fake server answers on 127.0.0.1, which is what the hostname encodes.
     server = PlexServer(
@@ -398,6 +476,81 @@ async def test_every_candidate_carries_the_identity(plex_client):
     for choice in choices:
         assert "X-Plex-Client-Identifier=room-1" in choice.url
         assert "X-Plex-Client-Identifier=room-1" in choice.probe_url
+
+
+async def test_a_transcode_url_declares_the_profile_to_transcode_for(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+
+    # Naming the client is not enough. A server that has never heard of this
+    # device has no profile to look it up in, so there is no transcode target
+    # to produce and the request is refused outright:
+    #
+    #   Unable to find client profile for device; platform=, ... model=
+    #   TranscodeUniversalRequest: unable to find a matching profile
+    #
+    # Declaring the target is what turns that 400 into audio - for both
+    # formats, not just the lossless one.
+    for codec, container in (("flac", "flac"), ("mp3", "mp3")):
+        url = plex_client.transcode_url(server, track, codec, 320, "s", "room-1")
+        extra = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
+        assert "add-transcode-target(" in extra
+        assert "type=musicProfile" in extra
+        assert "context=streaming" in extra
+        assert "protocol=http" in extra
+        assert f"container={container}" in extra
+        assert f"audioCodec={container}" in extra
+        # The server already having a music target must not fail the request.
+        assert "replace=true" in extra
+
+
+async def test_the_ceiling_is_pinned_to_the_target_not_to_the_source(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    url = plex_client.transcode_url(server, track, "flac", 0, "s", "room-1")
+    extra = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
+
+    # transcodeTarget is what the limitation is for: it caps what comes out.
+    # Scoped to the codec instead, it would describe what may go in, and a
+    # 24/192 file would be declared unplayable rather than brought down.
+    assert "scope=transcodeTarget" in extra
+    assert "audioCodec" not in extra.split("add-limitation", 1)[1]
+    assert "name=audio.samplingRate&value=48000" in extra
+    assert "name=audio.bitDepth&value=24" in extra
+    assert "isRequired=true" in extra
+
+
+async def test_mp3_is_not_given_a_bit_depth_it_does_not_have(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    url = plex_client.transcode_url(server, track, "mp3", 320, "s", "room-1")
+    extra = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
+
+    assert "audio.samplingRate" in extra
+    assert "audio.bitDepth" not in extra
+
+
+async def test_the_profile_extra_survives_the_query_string(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    url = plex_client.transcode_url(server, track, "flac", 0, "s", "room-1")
+
+    # The directives are joined by "+" and hold "&" of their own. Both have to
+    # reach the server as themselves rather than as a separator and a space,
+    # or the profile is read as gibberish and the request is refused.
+    assert "%2B" in url
+    assert "%26" in url
+    extra = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
+    assert extra.count("+") == 2
+    assert parse_qs(urlparse(url).query)["path"] == ["/library/metadata/101"]
 
 
 async def test_no_invented_codec_parameter(plex_client):
