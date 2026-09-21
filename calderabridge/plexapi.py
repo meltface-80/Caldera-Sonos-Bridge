@@ -13,7 +13,7 @@ import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field, replace
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import aiohttp
 from defusedxml import ElementTree as DET
@@ -220,6 +220,11 @@ class PlexServer:
 #: no reason.
 PREFLIGHT_TIMEOUT = 20.0
 
+#: How big a cover to ask the server for.  Sonos controllers show album art
+#: at around this on a phone, and the speaker never sees it at all - it is the
+#: app that fetches it - so there is no reason to be stingy or extravagant.
+ART_SIZE = 600
+
 #: What a hi-res track falls back to when the server will not serve lossless.
 #: High enough that the resample, not the codec, is the audible limit.
 MP3_FALLBACK_KBPS = 320
@@ -383,7 +388,12 @@ def _parse_track(node) -> PlexTrack:
         title=node.get("title", "") or "",
         artist=node.get("grandparentTitle", "") or node.get("originalTitle", "") or "",
         album=node.get("parentTitle", "") or "",
-        thumb=node.get("thumb", "") or node.get("parentThumb", "") or "",
+        thumb=(
+            node.get("thumb", "")
+            or node.get("parentThumb", "")
+            or node.get("grandparentThumb", "")
+            or ""
+        ),
         duration_ms=_int(node.get("duration"), 0),
         track_number=node.get("index", "") or "",
     )
@@ -833,8 +843,15 @@ class PlexClient:
         track.duration_ms = track.duration_ms or cached.duration_ms
         return track
 
-    def art_url(self, server: PlexServer, track: PlexTrack, size: int = 300) -> str:
-        """Album art, resized by the server so a speaker is not sent a 4000px JPEG."""
+    def art_url(self, server: PlexServer, track: PlexTrack, size: int = ART_SIZE) -> str:
+        """Album art, resized by the server so a speaker is not sent a 4000px JPEG.
+
+        The image to resize is named by a ``url`` parameter, and it is a path
+        on this same server.  It is passed as it stands: encoding it here as
+        well as in the query string leaves the server a path with ``%2F`` in
+        it where the slashes should be, which resolves to nothing - and a
+        Sonos app showing every other detail of a track but no cover.
+        """
         if not track.thumb or not server.usable:
             return ""
         return server.url(
@@ -843,7 +860,7 @@ class PlexClient:
             height=size,
             minSize=1,
             upscale=1,
-            url=quote(track.thumb, safe=""),
+            url=track.thumb,
         )
 
     # ------------------------------------------------------------------

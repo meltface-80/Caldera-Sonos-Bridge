@@ -27,7 +27,7 @@ class StubBridge:
         self.updating = False
         self.update_error = ""
         self.update = {
-            "version": "0.1.8",
+            "version": "0.1.9",
             "image": "ghcr.io/meltface-80/caldera-sonos-bridge:latest",
             "canInstall": True,
             "checkable": True,
@@ -347,7 +347,7 @@ async def test_the_empty_state_is_not_given_a_stray_label(client, config):
 # ----------------------------------------------------------------------
 async def test_the_page_shows_the_running_version_and_image(client):
     body = await (await client.get("/")).text()
-    assert "v0.1.8" in body
+    assert "v0.1.9" in body
     assert "ghcr.io/meltface-80/caldera-sonos-bridge:latest" in body
     assert "Check now" in body
 
@@ -379,7 +379,7 @@ async def test_a_locally_built_image_explains_itself(client, bridge):
 
 async def test_update_status_endpoint(client):
     status = await (await client.get("/update")).json()
-    assert status["version"] == "0.1.8"
+    assert status["version"] == "0.1.9"
 
 
 async def test_checking_for_an_update(client, bridge):
