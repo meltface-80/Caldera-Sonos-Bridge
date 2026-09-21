@@ -225,16 +225,42 @@ MP3_FALLBACK_KBPS = 320
 ART_SIZE = 600
 
 
-def _track_session(session_id: str, track: PlexTrack) -> str:
-    """A transcode session of this track's own.
+def _track_tag(track: PlexTrack) -> str:
+    return track.play_queue_item_id or track.rating_key
 
-    A Plex transcode session belongs to one track, and starting a second on
-    the same id ends the first.  Sonos loads a queue ahead of itself, so a
-    room sharing one id across its queue would have each track it prepares
-    cut the stream out from under the track that is playing.
-    """
-    tag = track.play_queue_item_id or track.rating_key
+
+def _track_session(session_id: str, track: PlexTrack) -> str:
+    """A transcode session of this track's own."""
+    tag = _track_tag(track)
     base = session_id or "caldera"
+    return f"{base}-{tag}" if tag else base
+
+
+def _track_client(client_id: str, track: PlexTrack) -> str:
+    """The identity a transcode of this track asks under.
+
+    Plex runs one live transcode per client and ends the old one the moment
+    the same client asks for another - "Client stopped playback", on the
+    reasoning that a player can only be playing one thing::
+
+        Terminated session 0x...:caldera-...-4966 with reason Client stopped
+        Attempting to create AdHoc transcode session caldera-...-4967
+
+    That reasoning does not hold for Sonos.  A speaker handed a queue fetches
+    the next track seventeen milliseconds after the one it is playing, to
+    have it buffered - so the track being prepared kills the track being
+    played, the speaker reconnects asking to resume part-way in, Plex has no
+    such thing to offer and starts again from the beginning, and the two
+    tracks take turns evicting each other until one of them wins.
+
+    A session id of its own is not enough; Plex ends the other session
+    regardless of that.  So each track asks as its own client, which is the
+    only way two of them may exist at once.  It costs a second concurrent
+    transcode while one track hands over to the next, and it is the reason
+    an album no longer starts on track two.
+    """
+    tag = _track_tag(track)
+    base = client_id or "caldera-sonos-bridge"
     return f"{base}-{tag}" if tag else base
 
 
@@ -610,6 +636,7 @@ class PlexClient:
         from MP3, and says so on the settings page.
         """
         session = _track_session(session_id, track)
+        client = _track_client(client_id, track)
         if stream_format == "mp3":
             return StreamChoice(
                 url=self.transcode_url(
@@ -618,7 +645,7 @@ class PlexClient:
                     "mp3",
                     max_bitrate_kbps or MP3_FALLBACK_KBPS,
                     session,
-                    client_id,
+                    client,
                 ),
                 transcoded=True,
                 label=f"MP3 {max_bitrate_kbps or MP3_FALLBACK_KBPS}",
@@ -632,7 +659,7 @@ class PlexClient:
                 mime=mime_for_uri(track.part_key),
             )
         return StreamChoice(
-            url=self.transcode_url(server, track, "flac", 0, session, client_id),
+            url=self.transcode_url(server, track, "flac", 0, session, client),
             transcoded=True,
             label="FLAC 24/48",
             mime="audio/flac",

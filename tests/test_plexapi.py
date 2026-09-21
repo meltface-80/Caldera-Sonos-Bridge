@@ -470,7 +470,7 @@ async def test_a_transcode_url_names_its_client(plex_client):
     # Plex decides what to produce from the profile of the client it is
     # producing it for. A request naming no client is refused outright - a
     # plain 400, whatever else about it is right.
-    assert query["X-Plex-Client-Identifier"] == ["room-1"]
+    assert query["X-Plex-Client-Identifier"][0].startswith("room-1")
     assert query["X-Plex-Product"]
     assert query["X-Plex-Platform"]
 
@@ -585,6 +585,26 @@ async def test_the_identity_names_a_device_plex_has_a_profile_for(plex_client):
     # which is the most misleading way for this to be wrong.
     assert query["X-Plex-Device"] == ["Sonos"]
     assert query["X-Plex-Model"] == ["sonos"]
+
+
+async def test_each_track_asks_as_a_client_of_its_own(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    queue = parse_play_queue(play_queue_xml(3, sample_rate=192000, bit_depth=24))
+
+    # Plex runs one live transcode per client and ends the old one the moment
+    # the same client asks for another. A Sonos speaker fetches the next track
+    # in its queue a few milliseconds after the one it is playing, so sharing
+    # an identity has the track being prepared kill the track being played.
+    seen = set()
+    for track in queue.tracks:
+        choice = plex_client.stream_choice(
+            server, track, "original", 0, "caldera-room", "room-1"
+        )
+        seen.add(parse_qs(urlparse(choice.url).query)["X-Plex-Client-Identifier"][0])
+    assert len(seen) == len(queue.tracks)
+    assert all(name.startswith("room-1") for name in seen)
 
 
 async def test_each_track_carries_its_own_plex_session_identifier(plex_client):
