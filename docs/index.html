@@ -327,6 +327,7 @@ docker run -d \
   <span class="k">--restart</span> unless-stopped \
   <span class="k">-v</span> caldera-sonos:/config \
   <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
+  <span class="k">--group-add</span> "$(getent group docker | cut -d: -f3)" \
   ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
       </div>
 
@@ -337,10 +338,13 @@ docker run -d \
       </div>
 
       <div class="note">
-        <b>The Docker socket is optional.</b> It is what lets the bridge
-        <a href="#updates">update itself</a> from the settings page, and it is effectively root on
-        the host. Drop that one line if you would rather not &mdash; everything else works the
-        same, and the page will still tell you when an update exists.
+        <b>The two socket lines are optional, and come as a pair.</b> They are what let the bridge
+        <a href="#updates">update itself</a> from the settings page, and access to the Docker socket
+        is effectively root on the host. Drop both if you would rather not &mdash; everything else
+        works the same, and the page will still tell you when an update exists.
+        The bridge runs as an unprivileged user, so the mount on its own leaves it a socket it
+        cannot read; <code>--group-add</code> puts the container in the host's <code>docker</code>
+        group, and the <code>getent</code> call reads that group's number off the host.
       </div>
 
       <div class="note">
@@ -375,10 +379,11 @@ docker run -d \
     <div class="out">
       <div class="note">
         <b>This needs the Docker socket</b> &mdash; a container can only replace itself if it can
-        talk to Docker. That is the
-        <code>-v /var/run/docker.sock:/var/run/docker.sock</code> line in the
-        <a href="#install">install command</a>. If you installed without it, re-run that block with
-        the line added, once, and you should not need a shell for this again.
+        talk to Docker. That is the <code>-v /var/run/docker.sock:/var/run/docker.sock</code> and
+        <code>--group-add</code> lines in the <a href="#install">install command</a>, and both are
+        needed: the bridge does not run as root, so the mount alone gives it a socket it cannot
+        read. If either is missing the Updates card says which, and names the group number to add.
+        Re-run the install block with both lines, once, and you should not need a shell again.
       </div>
 
       <div class="note">

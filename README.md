@@ -61,6 +61,7 @@ docker run -d \
   --restart unless-stopped \
   -v caldera-sonos:/config \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(getent group docker | cut -d: -f3)" \
   ghcr.io/meltface-80/caldera-sonos-bridge:latest
 ```
 
@@ -68,10 +69,14 @@ docker run -d \
 > Docker's default bridge network. It is also how the bridge finds your speakers. Docker Desktop
 > for macOS and Windows has no real host networking, so this needs a Linux host.
 
-> **The Docker socket is optional, and it is not a small thing to mount.** It is what lets the
-> bridge [update itself](#updates) from the settings page, and it is effectively root on the host.
-> Drop that one line if you would rather not: everything else works the same, and the page will
-> still tell you when an update exists — it just cannot install one.
+> **The socket lines are optional, and not a small thing to grant.** They are what let the bridge
+> [update itself](#updates) from the settings page, and access to the Docker socket is effectively
+> root on the host. Drop both if you would rather not: everything else works the same, and the page
+> will still tell you when an update exists — it just cannot install one.
+>
+> They come as a pair. The bridge runs as an unprivileged user, so mounting the socket alone leaves
+> it unreadable; `--group-add` puts the container in the host's `docker` group, which is what makes
+> the mount usable. The `getent` call reads that group's number off the host.
 
 The config volume is deliberately *not* removed above. `/config` holds your Plex token, your
 settings and the port each room was given, so keeping it makes this a swap rather than a fresh
@@ -95,14 +100,19 @@ The settings page says which version is running and whether a newer image has be
 will install it — no shell, no re-running the `docker run` line.
 
 This needs the Docker socket, because a container can only replace itself if it can talk to Docker.
-That is the line in the install command above:
+That is these two lines from the install command above:
 
-```
--v /var/run/docker.sock:/var/run/docker.sock
+```bash
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(getent group docker | cut -d: -f3)" \
 ```
 
-If you installed without it, re-run the install block with that line added — once — and you should
-not need a shell for this again.
+Both are needed. The bridge does not run as root, so the mount on its own gives it a socket it
+cannot read; `--group-add` puts it in the group that owns the socket. If either is missing the
+Updates card says exactly which, and names the group number to add.
+
+If you installed without them, re-run the install block with both lines — once — and you should not
+need a shell for this again.
 
 > **Weigh it up.** Access to the Docker socket is effectively root on the host. Without it the
 > bridge still *tells* you an update exists; it just cannot install one, and the page says so
