@@ -11,6 +11,8 @@ from calderabridge.updates import (
     Docker,
     UpdateError,
     Updater,
+    config_volume,
+    container_candidates,
     replacement_payload,
     split_ref,
 )
@@ -117,6 +119,7 @@ class FakeDocker:
 
     async def start(self) -> None:
         app = web.Application()
+        app.router.add_get("/v1.41/containers/json", self._list)
         app.router.add_get("/v1.41/containers/{id}/json", self._inspect)
         app.router.add_post("/v1.41/containers/create", self._create)
         app.router.add_post("/v1.41/containers/{id}/rename", self._rename)
@@ -138,6 +141,21 @@ class FakeDocker:
         if name in self.containers:
             return web.json_response(self.containers[name])
         return web.json_response({"message": "no such container"}, status=404)
+
+    async def _list(self, request):
+        self.calls.append("list")
+        return web.json_response(
+            [
+                {
+                    "Id": "self-id",
+                    "Names": ["/caldera-sonos-bridge"],
+                    "Mounts": [
+                        {"Destination": "/config", "Name": "caldera-sonos"},
+                    ],
+                },
+                {"Id": "other", "Names": ["/plex"], "Mounts": []},
+            ]
+        )
 
     async def _image(self, request):
         return web.json_response({"RepoDigests": self.repo_digests})
@@ -379,3 +397,116 @@ async def test_installing_over_an_unusable_socket_says_how_to_fix_it(
         status = await updater.status()
         assert status["canInstall"] is False
         assert "--group-add 998" in str(status["reason"])
+
+
+# ----------------------------------------------------------------------
+# Working out which container this is
+# ----------------------------------------------------------------------
+def test_the_container_id_is_found_wherever_docker_keeps_its_data(monkeypatch):
+    # DietPi, among others, moves Docker's data root, so matching on a literal
+    # /docker/containers/ path finds nothing.
+    mountinfo = (
+        "1 2 0:1 / / rw - overlay overlay rw\n"
+        "3 4 0:2 /mnt/dietpi_userdata/docker-data/containers/"
+        + "f" * 64
+        + "/hostname /etc/hostname rw - ext4 /dev/sda1 rw\n"
+    )
+    monkeypatch.setattr(
+        "calderabridge.updates._read",
+        lambda path: mountinfo if "mountinfo" in path else "",
+    )
+    monkeypatch.setenv("HOSTNAME", "DietPi")
+
+    assert "f" * 64 in container_candidates()
+
+
+def test_the_hostname_is_offered_but_never_trusted_alone(monkeypatch):
+    # Under host networking HOSTNAME is the machine's name, not the container's.
+    monkeypatch.setattr("calderabridge.updates._read", lambda path: "")
+    monkeypatch.setenv("HOSTNAME", "DietPi")
+    monkeypatch.delenv("CONTAINER_NAME", raising=False)
+
+    assert container_candidates() == ["DietPi"]
+
+
+def test_an_explicit_container_name_outranks_the_hostname(monkeypatch):
+    monkeypatch.setattr("calderabridge.updates._read", lambda path: "")
+    monkeypatch.setenv("CONTAINER_NAME", "caldera-sonos-bridge")
+    monkeypatch.setenv("HOSTNAME", "DietPi")
+
+    assert container_candidates() == ["caldera-sonos-bridge", "DietPi"]
+
+
+def test_the_config_volume_is_read_from_the_mount_table():
+    mountinfo = (
+        "1 2 0:1 / / rw - overlay overlay rw\n"
+        "3 4 0:2 /var/lib/docker/volumes/caldera-sonos/_data /config rw - ext4 "
+        "/dev/sda1 rw\n"
+    )
+    assert config_volume(mountinfo) == "caldera-sonos"
+    assert config_volume("1 2 0:1 / / rw - overlay overlay rw") == ""
+
+
+async def test_a_wrong_guess_is_discarded_for_one_docker_recognises(
+    updater, daemon, monkeypatch
+):
+    # Exactly the failure seen in the wild: the guess is the host's name, and
+    # Docker has no such container.
+    monkeypatch.setattr(
+        "calderabridge.updates.container_candidates", lambda: ["DietPi", "self-id"]
+    )
+    updater.container_id = ""
+    updater._confirmed = ""
+
+    assert await updater.whoami() == "self-id"
+
+
+async def test_identity_falls_back_to_the_config_volume(updater, monkeypatch):
+    monkeypatch.setattr(
+        "calderabridge.updates.container_candidates", lambda: ["DietPi"]
+    )
+    monkeypatch.setattr("calderabridge.updates.config_volume", lambda *_: "caldera-sonos")
+    updater.container_id = ""
+    updater._confirmed = ""
+
+    # Nothing Docker recognises by name, but the volume belongs to one container.
+    assert await updater.whoami() == "self-id"
+
+
+async def test_identity_is_only_worked_out_once(updater, daemon, monkeypatch):
+    monkeypatch.setattr(
+        "calderabridge.updates.container_candidates", lambda: ["self-id"]
+    )
+    updater.container_id = ""
+    updater._confirmed = ""
+
+    await updater.whoami()
+    before = daemon.calls.count("inspect")
+    await updater.whoami()
+    assert daemon.calls.count("inspect") == before
+
+
+async def test_an_unidentifiable_container_says_what_to_set(updater, monkeypatch):
+    monkeypatch.setattr(
+        "calderabridge.updates.container_candidates", lambda: ["DietPi"]
+    )
+    monkeypatch.setattr("calderabridge.updates.config_volume", lambda *_: "")
+    updater.container_id = ""
+    updater._confirmed = ""
+
+    with pytest.raises(UpdateError, match="CONTAINER_NAME"):
+        await updater.whoami()
+
+
+async def test_status_reports_an_identity_failure_rather_than_guessing(
+    updater, monkeypatch
+):
+    monkeypatch.setattr(
+        "calderabridge.updates.container_candidates", lambda: ["DietPi"]
+    )
+    monkeypatch.setattr("calderabridge.updates.config_volume", lambda *_: "")
+    updater.container_id = ""
+    updater._confirmed = ""
+
+    status = await updater.status()
+    assert "CONTAINER_NAME" in str(status["error"])

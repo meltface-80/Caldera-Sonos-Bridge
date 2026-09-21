@@ -451,7 +451,7 @@ class Bridge:
         if self.updater is None or not self.updater.docker.available:
             return
         with contextlib.suppress(Exception):
-            inspected = await self.updater.docker.inspect(self.updater.container_id)
+            inspected = await self.updater.docker.inspect(await self.updater.whoami())
             name = str(inspected.get("Name") or "").lstrip("/")
             if name:
                 await self.updater.docker.remove(f"{name}{OLD_SUFFIX}")
