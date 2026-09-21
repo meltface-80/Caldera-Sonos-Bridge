@@ -471,7 +471,7 @@ class RoomPlayer:
                     _resolution(track),
                 )
                 return choice.url, self._metadata(choice.url, track, choice.mime)
-            if await self._plex.playable(choice.probe_url, self.machine_identifier):
+            if await self._plex.servable(self.server, choice, self.machine_identifier):
                 if index:
                     LOGGER.info(
                         "%s: the server would not serve %s for %r, using %s",

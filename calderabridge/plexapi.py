@@ -429,6 +429,9 @@ class PlexClient:
         self._routes: dict[str, PlexServer] = {}
         #: File details fetched for tracks whose play queue entry lacked them.
         self._parts: dict[str, PlexTrack] = {}
+        #: Output formats a server has been seen to serve, so a queue is not
+        #: checked track by track.
+        self._formats: set[tuple[str, str]] = set()
         #: Why the last request failed, for the settings page to show.
         self.last_error = ""
 
@@ -698,11 +701,21 @@ class PlexClient:
         path, and ``/music/:/transcode/universal/start.flac`` gets as far as
         the decision engine only to be refused there.
 
-        The identity stays neutral on purpose.  Announcing ``Sonos`` matches
-        Plex's own built-in Sonos profile, which offers no music over plain
-        HTTP and, being already furnished, quietly swallows the target this
-        request is trying to add.  Unrecognised is the better answer: it
-        lands on Generic, which takes the declared target as given.
+        The identity has to name a device Plex has a profile for.  It does
+        not fall back to a generic one: an unrecognised device gets
+
+            Unable to find client profile for device; platform=Linux, ...
+            TranscodeUniversalRequest: unable to find a matching profile
+
+        and a 400, before the media is even looked at.  ``Sonos`` is a
+        profile it ships, and - having watched it do so - it takes the
+        declared target perfectly well on top.
+
+        Every track also needs a session identifier of its own.  Plex keys a
+        streaming resource on ``X-Plex-Session-Identifier``, or on the client
+        identifier when there is none, and starting one ends the last.  Sonos
+        loads its queue ahead of itself, so without this the track being
+        prepared cuts the stream out from under the track that is playing.
         """
         container = "flac" if codec == "flac" else "mp3"
         params: dict[str, object] = {
@@ -711,18 +724,42 @@ class PlexClient:
             "directStream": 0,
             "musicBitrate": max_bitrate_kbps or "",
             "session": session_id or "",
+            "X-Plex-Session-Identifier": session_id or "",
             "X-Plex-Client-Identifier": client_id or "caldera-sonos-bridge",
             "X-Plex-Product": PLEX_PRODUCT,
             "X-Plex-Version": BRIDGE_VERSION,
             "X-Plex-Platform": "Linux",
             "X-Plex-Platform-Version": BRIDGE_VERSION,
-            "X-Plex-Device": "Linux",
+            "X-Plex-Device": "Sonos",
+            "X-Plex-Device-Name": "Sonos",
+            "X-Plex-Model": "sonos",
             # The profile is what turns "transcode this" into something the
             # server has any way to do, and it is also where the 24/48
             # ceiling is said.
             "X-Plex-Client-Profile-Extra": client_profile_extra(container),
         }
         return server.url("/audio/:/transcode/universal/start", **params)
+
+    async def servable(
+        self, server: PlexServer, choice: StreamChoice, client_id: str = ""
+    ) -> bool:
+        """Will this server serve *choice*, checking only once per format?
+
+        What a failed check finds is that the server has no profile to
+        transcode for this client, or no transcoder at all.  Neither is a
+        property of the track, so asking again for every track in a queue
+        only tells you the same thing - and each ask starts a transcode
+        session that the next one ends.  So a format that has worked is
+        taken as working.  A format that has not is checked again, because a
+        server that was busy once is not a server that cannot.
+        """
+        key = (server.base_url, choice.label)
+        if key in self._formats:
+            return True
+        if not await self.playable(choice.probe_url, client_id):
+            return False
+        self._formats.add(key)
+        return True
 
     async def playable(self, url: str, client_id: str = "") -> bool:
         """Will this URL actually serve audio?
