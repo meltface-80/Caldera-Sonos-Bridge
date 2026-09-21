@@ -303,16 +303,30 @@
   <div class="wrap">
     <h2>Install with Docker</h2>
     <p class="lead">On an always-on Linux machine on the same network as your speakers &mdash;
-       a NAS, a Raspberry Pi, a home server.</p>
+       a NAS, a Raspberry Pi, a home server. The same paste works for a fresh install and for
+       starting over: it clears away an existing container and image first.</p>
 
     <div class="out">
       <div class="codebox">
         <button class="copy-btn" id="copy">Copy</button>
-<pre id="cmd">docker run -d \
+<pre id="cmd"><span class="c"># Stop and remove any existing container</span>
+docker stop caldera-sonos-bridge 2&gt;/dev/null
+docker rm caldera-sonos-bridge 2&gt;/dev/null
+
+<span class="c"># Purge old images</span>
+docker rmi caldera-sonos-bridge:local 2&gt;/dev/null
+docker rmi ghcr.io/meltface-80/caldera-sonos-bridge:latest 2&gt;/dev/null
+docker image prune <span class="k">-f</span>
+
+<span class="c"># Pull and run</span>
+docker pull ghcr.io/meltface-80/caldera-sonos-bridge:latest
+
+docker run -d \
   <span class="k">--name</span> caldera-sonos-bridge \
   <span class="k">--network</span> host \
   <span class="k">--restart</span> unless-stopped \
   <span class="k">-v</span> caldera-sonos:/config \
+  <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
       </div>
 
@@ -323,8 +337,17 @@
       </div>
 
       <div class="note">
-        <b>Keep the volume.</b> <code>/config</code> holds your Plex token, your settings and the
-        port each room was given. Without it you re-link after every image pull.
+        <b>The Docker socket is optional.</b> It is what lets the bridge
+        <a href="#updates">update itself</a> from the settings page, and it is effectively root on
+        the host. Drop that one line if you would rather not &mdash; everything else works the
+        same, and the page will still tell you when an update exists.
+      </div>
+
+      <div class="note">
+        <b>The config volume is deliberately kept.</b> <code>/config</code> holds your Plex token,
+        your settings and the port each room was given, so the block above is a swap rather than a
+        fresh start. To genuinely start over add <code>docker volume rm caldera-sonos</code> after
+        the container is removed, and expect to link to Plex again.
       </div>
     </div>
 
@@ -350,22 +373,18 @@
        published &mdash; and installs it. No shell, no re-running the docker run line.</p>
 
     <div class="out">
-      <div class="codebox">
-        <button class="copy-btn" id="copy2">Copy</button>
-<pre id="cmd2">docker run -d \
-  <span class="k">--name</span> caldera-sonos-bridge \
-  <span class="k">--network</span> host \
-  <span class="k">--restart</span> unless-stopped \
-  <span class="k">-v</span> caldera-sonos:/config \
-  <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
+      <div class="note">
+        <b>This needs the Docker socket</b> &mdash; a container can only replace itself if it can
+        talk to Docker. That is the
+        <code>-v /var/run/docker.sock:/var/run/docker.sock</code> line in the
+        <a href="#install">install command</a>. If you installed without it, re-run that block with
+        the line added, once, and you should not need a shell for this again.
       </div>
 
       <div class="note">
-        <b>Weigh that up.</b> The extra mount is what lets the container replace itself, and access
-        to the Docker socket is effectively root on the host. It is not in the default command for
-        that reason. Without it the bridge still tells you an update exists; it just cannot install
-        one, and the page says so rather than offering a button that would fail.
+        <b>Weigh it up.</b> Access to the Docker socket is effectively root on the host. Without it
+        the bridge still tells you an update exists; it just cannot install one, and the page says
+        so rather than offering a button that would fail.
       </div>
     </div>
 
