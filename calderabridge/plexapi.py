@@ -17,7 +17,12 @@ from urllib.parse import quote, urlencode
 import aiohttp
 from defusedxml import ElementTree as DET
 
+from .config import BRIDGE_VERSION
+
 LOGGER = logging.getLogger(__name__)
+
+#: What the bridge calls itself to a Plex transcoder.
+PLEX_PRODUCT = "Caldera Sonos Bridge"
 
 #: Containers Sonos plays from an HTTP URL without help.  Anything outside this
 #: set has to be transcoded on the way out or the speaker will refuse it.
@@ -481,6 +486,7 @@ class PlexClient:
         stream_format: str = "original",
         max_bitrate_kbps: int = 0,
         session_id: str = "",
+        client_id: str = "",
     ) -> list[StreamChoice]:
         """Ways to send *track* to a speaker, best first.
 
@@ -497,15 +503,22 @@ class PlexClient:
         will not.  Either beats silence.
         """
         lossless = StreamChoice(
-            url=self.transcode_url(server, track, "flac", 0, session_id),
-            probe_url=self.transcode_url(server, track, "flac", 0, _probe(session_id)),
+            url=self.transcode_url(server, track, "flac", 0, session_id, client_id),
+            probe_url=self.transcode_url(
+                server, track, "flac", 0, _probe(session_id), client_id
+            ),
             transcoded=True,
             label="FLAC 24/48",
             mime="audio/flac",
         )
         lossy = StreamChoice(
             url=self.transcode_url(
-                server, track, "mp3", max_bitrate_kbps or MP3_FALLBACK_KBPS, session_id
+                server,
+                track,
+                "mp3",
+                max_bitrate_kbps or MP3_FALLBACK_KBPS,
+                session_id,
+                client_id,
             ),
             probe_url=self.transcode_url(
                 server,
@@ -513,6 +526,7 @@ class PlexClient:
                 "mp3",
                 max_bitrate_kbps or MP3_FALLBACK_KBPS,
                 _probe(session_id),
+                client_id,
             ),
             transcoded=True,
             label=f"MP3 {max_bitrate_kbps or MP3_FALLBACK_KBPS}",
@@ -542,10 +556,11 @@ class PlexClient:
         stream_format: str = "original",
         max_bitrate_kbps: int = 0,
         session_id: str = "",
+        client_id: str = "",
     ) -> str:
         """The preferred way to send *track*, without checking it works."""
         return self.stream_candidates(
-            server, track, stream_format, max_bitrate_kbps, session_id
+            server, track, stream_format, max_bitrate_kbps, session_id, client_id
         )[0].url
 
     def transcode_url(
@@ -555,18 +570,36 @@ class PlexClient:
         codec: str = "mp3",
         max_bitrate_kbps: int = 0,
         session_id: str = "",
+        client_id: str = "",
     ) -> str:
-        """A universal-transcoder URL, which every modern server understands."""
+        """A universal-transcoder URL.
+
+        The ``X-Plex-*`` identity belongs in the query string, not in headers.
+        The transcoder decides what to produce from the profile of the client
+        it is producing it *for*, and a request that names no client is refused
+        outright - a plain 400, whatever else is right about it.  Headers are
+        no substitute here: the consumer of this URL is a Sonos player, which
+        sends none.
+
+        The output format comes from the extension.  There is no parameter for
+        it, and inventing one only adds something else to be rejected.
+        """
         params: dict[str, object] = {
             "path": track.key or f"/library/metadata/{track.rating_key}",
             "mediaIndex": 0,
             "partIndex": 0,
             "protocol": "http",
+            "hasMDE": 1,
             "directPlay": 0,
             "directStream": 0,
-            "audioCodec": codec,
             "musicBitrate": max_bitrate_kbps or "",
             "session": session_id or "",
+            "X-Plex-Client-Identifier": client_id or "caldera-sonos-bridge",
+            "X-Plex-Product": PLEX_PRODUCT,
+            "X-Plex-Version": BRIDGE_VERSION,
+            "X-Plex-Platform": "Linux",
+            "X-Plex-Device": "Sonos",
+            "X-Plex-Model": "sonos",
         }
         if codec == "flac":
             # Telling the server what the *client* can take is how a Plex

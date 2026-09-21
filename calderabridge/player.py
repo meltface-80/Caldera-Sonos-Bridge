@@ -52,6 +52,13 @@ _SONOS_STATE = {
 }
 
 
+def _resolution(track: PlexTrack) -> str:
+    """How a track's format reads in a log line."""
+    depth = f"{track.bit_depth}-bit" if track.bit_depth else "unstated depth"
+    rate = f"{track.sample_rate / 1000:g} kHz" if track.sample_rate else "unstated rate"
+    return f"{track.container or 'unknown'} {depth}/{rate}"
+
+
 def _hms(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
@@ -443,6 +450,7 @@ class RoomPlayer:
             self.config.stream_format,
             self.config.max_bitrate_kbps,
             self._session_id,
+            self.machine_identifier,
         )
         if candidates[0].transcoded and self.config.stream_format == "original":
             LOGGER.info(
@@ -454,6 +462,14 @@ class RoomPlayer:
 
         for index, choice in enumerate(candidates):
             if not choice.transcoded:
+                # Said out loud because "is my library reaching the speakers
+                # untouched?" is the question this bridge exists to answer.
+                LOGGER.info(
+                    "%s: %r sent as stored, %s - bit-perfect",
+                    self.zone.name,
+                    track.title,
+                    _resolution(track),
+                )
                 return choice.url, self._metadata(choice.url, track, choice.mime)
             if await self._plex.playable(choice.probe_url, self.machine_identifier):
                 if index:

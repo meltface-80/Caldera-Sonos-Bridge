@@ -124,8 +124,8 @@ async def test_stream_url_transcodes_when_asked(plex_client):
     track = parse_play_queue(play_queue_xml(1)).tracks[0]
 
     url = plex_client.stream_url(server, track, "mp3", max_bitrate_kbps=320)
+    # The extension picks the output format; there is no parameter for it.
     assert "/music/:/transcode/universal/start.mp3" in url
-    assert "audioCodec=mp3" in url
     assert "musicBitrate=320" in url
 
 
@@ -202,7 +202,6 @@ async def test_hi_res_is_resampled_to_lossless_flac_not_mp3(plex_client):
     # Dropping a 24/192 master to MP3 would be a far bigger loss than the
     # resample it actually needs.
     assert "start.flac" in url
-    assert "audioCodec=flac" in url
     assert "start.mp3" not in url
 
 
@@ -356,3 +355,60 @@ async def test_the_stream_url_a_speaker_gets_is_plain_http(plex_client, fake_ple
     track = parse_play_queue(play_queue_xml(1)).tracks[0]
     # Sonos would otherwise have to verify a certificate for every track.
     assert plex_client.stream_url(server, track).startswith("http://127.0.0.1:")
+
+
+# ----------------------------------------------------------------------
+# A transcode URL has to say who it is for
+# ----------------------------------------------------------------------
+async def test_a_transcode_url_names_its_client(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+
+    url = plex_client.transcode_url(server, track, "mp3", 320, "sess", "room-1")
+    query = parse_qs(urlparse(url).query)
+
+    # Plex decides what to produce from the profile of the client it is
+    # producing it for. A request naming no client is refused outright - a
+    # plain 400, whatever else about it is right.
+    assert query["X-Plex-Client-Identifier"] == ["room-1"]
+    assert query["X-Plex-Product"]
+    assert query["X-Plex-Platform"]
+
+
+async def test_the_identity_is_in_the_query_not_only_the_headers(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+
+    # Headers are no substitute: the consumer of this URL is a Sonos player,
+    # which sends none.
+    url = plex_client.transcode_url(server, track, "mp3", 0, "s", "room-1")
+    assert "X-Plex-Client-Identifier=room-1" in url
+
+
+async def test_every_candidate_carries_the_identity(plex_client):
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(
+        play_queue_xml(1, sample_rate=192000, bit_depth=24)
+    ).tracks[0]
+
+    choices = plex_client.stream_candidates(server, track, "original", 0, "s", "room-1")
+    assert choices
+    for choice in choices:
+        assert "X-Plex-Client-Identifier=room-1" in choice.url
+        assert "X-Plex-Client-Identifier=room-1" in choice.probe_url
+
+
+async def test_no_invented_codec_parameter(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+
+    # There is no audioCodec parameter on this endpoint; inventing one only
+    # adds something else for the server to reject. It appears only inside the
+    # profile limitations, which is a different thing entirely.
+    for codec in ("flac", "mp3"):
+        url = plex_client.transcode_url(server, track, codec)
+        assert "audioCodec" not in parse_qs(urlparse(url).query)
