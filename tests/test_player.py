@@ -453,3 +453,128 @@ async def test_cd_resolution_tracks_reach_sonos_untouched(player, fake_sonos, fa
     for uri, _ in fake_sonos.queue:
         assert "/library/parts/" in uri
         assert "/transcode/" not in uri
+
+
+# ----------------------------------------------------------------------
+# The progress bar
+# ----------------------------------------------------------------------
+async def test_position_advances_between_polls(player, fake_plex):
+    import time
+
+    await player.play_media(play_params(fake_plex))
+    player._mark_position(30_000)
+
+    # Polling the speaker every few seconds is fine for staying honest and
+    # hopeless for a progress bar: reporting the last reading unchanged is
+    # what makes it stand still and then jump.
+    player._position_at = time.monotonic() - 3.0
+    assert 32_500 <= player.position_now_ms <= 33_500
+
+
+async def test_position_does_not_advance_while_paused(player, fake_plex):
+    import time
+
+    await player.play_media(play_params(fake_plex))
+    player._mark_position(30_000)
+    await player.pause()
+
+    player._position_at = time.monotonic() - 5.0
+    assert player.position_now_ms == 30_000
+
+
+async def test_position_never_runs_past_the_end(player, fake_plex):
+    import time
+
+    await player.play_media(play_params(fake_plex))
+    player._mark_position(230_000)
+    player._position_at = time.monotonic() - 60.0
+
+    # The track is four minutes; the speaker will have moved on and the next
+    # poll is what says so.
+    assert player.position_now_ms == 240_000
+
+
+async def test_the_timeline_reports_the_live_position(player, fake_plex):
+    import time
+
+    from defusedxml import ElementTree as DET
+
+    await player.play_media(play_params(fake_plex))
+    player._mark_position(10_000)
+    player._position_at = time.monotonic() - 4.0
+
+    root = DET.fromstring(player.timeline_xml())
+    music = [t for t in root if t.get("type") == "music"][0]
+    assert 13_500 <= int(music.get("time")) <= 14_500
+
+
+async def test_stepping_works_from_where_playback_actually_is(player, fake_sonos, fake_plex):
+    import time
+
+    await player.play_media(play_params(fake_plex))
+    player._mark_position(60_000)
+    player._position_at = time.monotonic() - 5.0
+
+    await player.step(30)
+    # 60s read + 5s elapsed + 30s step, not 60 + 30.
+    assert fake_sonos.position == "0:01:35"
+
+
+# ----------------------------------------------------------------------
+# Transcoding above 24/48
+# ----------------------------------------------------------------------
+async def hi_res_player(config, zone, fake_sonos, plex_client, fake_plex):
+    from .conftest import StubTopology
+
+    fake_plex.track_kwargs = {"sample_rate": 192000, "bit_depth": 24}
+    return RoomPlayer(
+        config, zone, StubTopology({zone.uid: zone}), fake_sonos, plex_client, 32701
+    )
+
+
+async def test_hi_res_uses_the_lossless_endpoint_when_the_server_serves_it(
+    config, zone, fake_sonos, plex_client, fake_plex
+):
+    player = await hi_res_player(config, zone, fake_sonos, plex_client, fake_plex)
+    await player.play_media(play_params(fake_plex))
+
+    for uri, metadata in fake_sonos.queue:
+        assert "start.flac" in uri
+        assert "audio/flac" in metadata
+    assert fake_plex.transcode_requests("start.flac")
+
+
+async def test_hi_res_falls_back_when_the_server_will_not_serve_lossless(
+    config, zone, fake_sonos, plex_client, fake_plex
+):
+    # A URL the server does not answer is, from the speaker's side, identical
+    # to a track that ended - so it has to be found here, not by silence.
+    fake_plex.flac_ok = False
+    player = await hi_res_player(config, zone, fake_sonos, plex_client, fake_plex)
+    await player.play_media(play_params(fake_plex))
+
+    assert fake_sonos.queue, "the track should still play"
+    for uri, metadata in fake_sonos.queue:
+        assert "start.mp3" in uri
+        assert "audio/mpeg" in metadata
+
+
+async def test_every_transcode_is_checked_before_a_speaker_is_sent_to_it(
+    config, zone, fake_sonos, plex_client, fake_plex
+):
+    player = await hi_res_player(config, zone, fake_sonos, plex_client, fake_plex)
+    await player.play_media(play_params(fake_plex))
+
+    # The check must not use the session the speaker will use: asking Plex for
+    # a session, abandoning it, then having Sonos ask for the same one is a
+    # good way to be handed a stream that has already been consumed.
+    probes = [r for r in fake_plex.requests if "probe" in r]
+    assert probes
+    for uri, _ in fake_sonos.queue:
+        assert "probe" not in uri
+
+
+async def test_a_file_within_the_ceiling_is_never_probed(player, fake_sonos, fake_plex):
+    await player.play_media(play_params(fake_plex))
+    # Nothing to check: the stored file is handed over as it is.
+    assert not [r for r in fake_plex.requests if "transcode" in r]

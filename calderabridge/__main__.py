@@ -95,7 +95,20 @@ async def run() -> int:
         await bridge.stop()
         return 1
 
-    await stop_event.wait()
+    # Either a signal, or the bridge handing over to a container it started on
+    # a newer image - in which case the ports are already released and there is
+    # nothing left for this process to do.
+    await asyncio.wait(
+        [
+            asyncio.create_task(stop_event.wait()),
+            asyncio.create_task(bridge.exit_requested.wait()),
+        ],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if bridge.exit_requested.is_set():
+        LOGGER.info("Handed over to the updated container")
+        return 0
+
     LOGGER.info("Shutting down")
     await bridge.stop()
     return 0

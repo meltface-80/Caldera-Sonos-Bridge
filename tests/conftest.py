@@ -220,6 +220,8 @@ class FakePlex:
         self.timelines: list[dict[str, str]] = []
         self.requests: list[str] = []
         self.transcode_ok = True
+        #: Some server builds do not answer the lossless endpoint at all.
+        self.flac_ok = True
         self.metadata_ok = True
         self.queue_ok = True
         self.port = 0
@@ -285,9 +287,19 @@ class FakePlex:
 
     async def _transcode(self, request: web.Request) -> web.Response:
         self.requests.append(str(request.rel_url))
+        rest = request.match_info["rest"]
         if not self.transcode_ok:
             return web.Response(status=500, text="no transcoder")
-        return web.Response(body=b"\x00\x01audio", content_type="audio/mpeg")
+        if rest.startswith("start.flac") and not self.flac_ok:
+            return web.Response(status=404, text="no such endpoint")
+        kind = "audio/flac" if rest.startswith("start.flac") else "audio/mpeg"
+        return web.Response(body=b"\x00\x01audio", content_type=kind)
+
+    def transcode_requests(self, suffix: str) -> list[str]:
+        """Every transcode request for one output format."""
+        return [
+            r for r in self.requests if f"/music/:/transcode/universal/{suffix}" in r
+        ]
 
 
 # ----------------------------------------------------------------------

@@ -67,6 +67,13 @@ def lan_address(host: str) -> str:
     return ".".join(octets)
 
 
+def mime_for_uri(uri: str) -> str:
+    """A MIME type for a stored file, from its extension."""
+    from .didl import mime_for_uri as _mime
+
+    return _mime(uri)
+
+
 def _xml_headers(client_id: str = "") -> dict[str, str]:
     headers = {"Accept": "application/xml"}
     if client_id:
@@ -150,6 +157,32 @@ class PlexServer:
         query["X-Plex-Token"] = self.token
         joiner = "&" if "?" in path else "?"
         return f"{self.base_url}{path}{joiner}{urlencode(query)}"
+
+
+#: What a hi-res track falls back to when the server will not serve lossless.
+#: High enough that the resample, not the codec, is the audible limit.
+MP3_FALLBACK_KBPS = 320
+
+
+def _probe(session_id: str) -> str:
+    """A session id for checking a transcode, distinct from the real one.
+
+    Checking and playing must not share a session: asking Plex for one, then
+    abandoning it, then having the speaker ask for the very same session is a
+    good way to be handed a stream that has already been consumed.
+    """
+    return f"{session_id or 'caldera'}-probe"
+
+
+@dataclass
+class StreamChoice:
+    """One way of sending a track to a speaker."""
+
+    url: str
+    probe_url: str
+    transcoded: bool
+    label: str
+    mime: str
 
 
 @dataclass
@@ -433,6 +466,67 @@ class PlexClient:
         return parse_play_queue(body)
 
     # ------------------------------------------------------------------
+    def stream_candidates(
+        self,
+        server: PlexServer,
+        track: PlexTrack,
+        stream_format: str = "original",
+        max_bitrate_kbps: int = 0,
+        session_id: str = "",
+    ) -> list[StreamChoice]:
+        """Ways to send *track* to a speaker, best first.
+
+        More than one, because a transcode can only be *asked* for.  Not every
+        server build answers the lossless endpoint, and a URL that returns
+        nothing is indistinguishable, from the speaker's side, from a track
+        that simply ended - so there has to be something to fall back to.
+
+        Under ``original`` a file the speaker can take is handed over exactly
+        as Plex stores it: 16/44.1, 16/48, 24/44.1 and 24/48 all arrive
+        bit-perfect.  Only a file the speaker would refuse is touched, and then
+        as gently as possible - 24/96 and 24/192 come down to 24/48 and stay
+        lossless if the server will do it, and become high-bitrate MP3 if it
+        will not.  Either beats silence.
+        """
+        lossless = StreamChoice(
+            url=self.transcode_url(server, track, "flac", 0, session_id),
+            probe_url=self.transcode_url(server, track, "flac", 0, _probe(session_id)),
+            transcoded=True,
+            label="FLAC 24/48",
+            mime="audio/flac",
+        )
+        lossy = StreamChoice(
+            url=self.transcode_url(
+                server, track, "mp3", max_bitrate_kbps or MP3_FALLBACK_KBPS, session_id
+            ),
+            probe_url=self.transcode_url(
+                server,
+                track,
+                "mp3",
+                max_bitrate_kbps or MP3_FALLBACK_KBPS,
+                _probe(session_id),
+            ),
+            transcoded=True,
+            label=f"MP3 {max_bitrate_kbps or MP3_FALLBACK_KBPS}",
+            mime="audio/mpeg",
+        )
+
+        if stream_format == "mp3":
+            return [lossy]
+        if stream_format == "flac":
+            return [lossless, lossy]
+        if track.sonos_native:
+            return [
+                StreamChoice(
+                    url=server.url(track.part_key),
+                    probe_url="",
+                    transcoded=False,
+                    label="the stored file",
+                    mime=mime_for_uri(track.part_key),
+                )
+            ]
+        return [lossless, lossy]
+
     def stream_url(
         self,
         server: PlexServer,
@@ -441,27 +535,10 @@ class PlexClient:
         max_bitrate_kbps: int = 0,
         session_id: str = "",
     ) -> str:
-        """The URL a Sonos player should fetch for *track*.
-
-        Under ``original`` - the default, and the one to leave alone - a file
-        the speaker can take is handed over exactly as Plex stores it: 16/44.1,
-        16/48, 24/44.1 and 24/48 all arrive bit-perfect, with nothing decoding
-        or re-encoding anywhere between the library and the speaker.
-
-        Only a file the speaker would refuse is touched, and then as gently as
-        possible: a 24/96 or 24/192 master is brought down to 24/48 and stays
-        **lossless FLAC**.  Dropping such a track to MP3 would be a far bigger
-        loss than the resample, and dropping it entirely is no use to anyone.
-        """
-        if stream_format == "mp3":
-            return self.transcode_url(server, track, "mp3", max_bitrate_kbps, session_id)
-        if stream_format == "flac":
-            return self.transcode_url(server, track, "flac", 0, session_id)
-
-        # original
-        if track.sonos_native:
-            return server.url(track.part_key)
-        return self.transcode_url(server, track, "flac", 0, session_id)
+        """The preferred way to send *track*, without checking it works."""
+        return self.stream_candidates(
+            server, track, stream_format, max_bitrate_kbps, session_id
+        )[0].url
 
     def transcode_url(
         self,

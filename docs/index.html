@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caldera Sonos Bridge &mdash; install &amp; docs</title>
+<meta name="description" content="Caldera Sonos Bridge &mdash; play your Plex music library to Sonos speakers from Plexamp. Docker install and docs.">
+<style>
+  :root {
+    --bg:        #1b1d1f;   /* charcoal */
+    --bg-deep:   #141618;
+    --panel:     #232628;
+    --panel-2:   #2a2d30;
+    --line:      #35393d;
+    --text:      #e8e6e3;
+    --muted:     #a8a49e;
+    --copper:    #c47f4a;   /* subtle copper accent */
+    --copper-hi: #d99a66;
+    --copper-dim:#8a5a35;
+    --good:      #7fb47f;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--copper-hi); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+
+  /* ---------- top nav ---------- */
+  nav.topnav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(20,22,24,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.topnav .wrap {
+    display: flex; align-items: center; gap: 18px;
+    height: 52px; overflow-x: auto; white-space: nowrap;
+  }
+  nav.topnav a {
+    color: var(--muted); font-size: 14px; font-weight: 500;
+  }
+  nav.topnav a:hover { color: var(--copper-hi); text-decoration: none; }
+  nav.topnav .brand { color: var(--text); font-weight: 700; letter-spacing: .02em; }
+  nav.topnav .brand span { color: var(--copper); }
+  nav.topnav .gh { margin-left: auto; }
+
+  /* ---------- hero ---------- */
+  header.hero {
+    text-align: center;
+    padding: 48px 20px 40px;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% -10%, rgba(196,127,74,.14), transparent 65%),
+      var(--bg-deep);
+    border-bottom: 1px solid var(--line);
+  }
+  header.hero img.logo {
+    max-width: min(560px, 88vw);
+    width: 100%; height: auto;
+    border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.45);
+  }
+  header.hero .wordmark { display: none; font-size: 44px; font-weight: 800; letter-spacing: .03em; }
+  header.hero .wordmark span { color: var(--copper); }
+  header.hero.noimg img.logo { display: none; }
+  header.hero.noimg .wordmark { display: block; }
+  header.hero h1 { font-size: 30px; margin-top: 26px; font-weight: 700; }
+  header.hero p.tag { color: var(--muted); max-width: 640px; margin: 10px auto 0; font-size: 16px; }
+  .badges { margin-top: 18px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .badge {
+    display: inline-block; font-size: 12.5px; font-weight: 600;
+    padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--copper-dim); color: var(--copper-hi);
+    background: rgba(196,127,74,.08);
+  }
+  .badge.plain { border-color: var(--line); color: var(--muted); background: transparent; }
+
+  /* ---------- sections ---------- */
+  section { padding: 52px 0 8px; scroll-margin-top: 56px; }
+  section > .wrap > h2 {
+    font-size: 24px; font-weight: 700; margin-bottom: 6px;
+    padding-left: 14px; border-left: 3px solid var(--copper);
+  }
+  section > .wrap > p.lead { color: var(--muted); margin-bottom: 26px; max-width: 720px; }
+
+  /* ---------- signal path ---------- */
+  .flow {
+    display: grid; gap: 12px; margin-bottom: 22px;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    align-items: center;
+  }
+  .flow .node {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 14px; text-align: center;
+  }
+  .flow .node b { display: block; font-size: 14.5px; font-weight: 650; }
+  .flow .node span { font-size: 12.5px; color: var(--muted); }
+  .flow .node.mid { border-color: var(--copper); background: rgba(196,127,74,.07); }
+  .flow .arrow { color: var(--copper); font-size: 18px; text-align: center; }
+  .flow-note { font-size: 13.5px; color: var(--muted); margin-bottom: 26px; }
+  @media (max-width: 700px) {
+    .flow { grid-template-columns: 1fr; }
+    .flow .arrow { transform: rotate(90deg); }
+  }
+
+  /* ---------- feature grid ---------- */
+  .grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 18px 16px;
+  }
+  .card h3 { font-size: 15.5px; font-weight: 650; margin-bottom: 6px; }
+  .card h3 .em { margin-right: 8px; }
+  .card p { font-size: 13.5px; color: var(--muted); }
+
+  /* ---------- code + notes ---------- */
+  .out { display: grid; gap: 12px; min-width: 0; }
+  .out > * { min-width: 0; }
+  .codebox { position: relative; }
+  .codebox pre {
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px; padding-top: 40px;
+    overflow-x: auto;
+    font: 13px/1.55 var(--mono);
+    color: #d8d4cf;
+    white-space: pre;
+  }
+  .codebox pre .k { color: var(--copper-hi); }     /* flags / keys */
+  .codebox pre .c { color: #77726c; }              /* comments */
+  .copy-btn {
+    position: absolute; top: 10px; right: 10px;
+    font: 600 12px var(--sans); cursor: pointer;
+    color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 12px;
+  }
+  .copy-btn:hover { border-color: var(--copper); color: var(--copper-hi); }
+  .copy-btn.done { color: var(--good); border-color: var(--good); }
+  .after-note { font-size: 13.5px; color: var(--muted); }
+  .after-note code, p code, li code, td code {
+    font: 12.5px var(--mono);
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-radius: 5px; padding: 1.5px 6px;
+    color: var(--copper-hi);
+  }
+  .note {
+    font-size: 13px; color: var(--muted);
+    background: rgba(196,127,74,.06);
+    border: 1px solid var(--copper-dim);
+    border-radius: 10px; padding: 12px 14px;
+  }
+  .note b { color: var(--copper-hi); }
+
+  /* ---------- troubleshooting cards ---------- */
+  .info-cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .info-card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px;
+  }
+  .info-card h3 { font-size: 17px; margin-bottom: 4px; }
+  .info-card .sym { font-size: 12px; font-weight: 700; color: var(--copper-hi); letter-spacing: .06em; text-transform: uppercase; }
+  .info-card p { font-size: 13.5px; color: var(--muted); margin-top: 8px; }
+  .info-card .fine { font-size: 12.5px; color: var(--muted); margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+
+  /* ---------- env table ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel-2); color: var(--copper-hi); font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-family: var(--mono); white-space: nowrap; }
+  td { color: var(--muted); }
+  td:first-child { color: var(--text); }
+
+  /* ---------- first run ---------- */
+  .firstrun {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px;
+  }
+  .firstrun ol { padding-left: 20px; font-size: 14px; display: grid; gap: 9px; color: var(--muted); }
+  .firstrun ol li::marker { color: var(--copper); font-weight: 700; }
+  .firstrun ol li b { color: var(--text); }
+
+  /* ---------- small screens (phones, portrait) ---------- */
+  @media (max-width: 600px) {
+    header.hero { padding: 32px 16px 30px; }
+    header.hero h1 { font-size: 24px; margin-top: 20px; }
+    header.hero .wordmark { font-size: 34px; }
+    section { padding: 40px 0 6px; }
+    section > .wrap > h2 { font-size: 21px; }
+    .codebox pre { font-size: 12px; padding: 14px; padding-top: 40px; }
+    th, td { padding: 9px 10px; }
+  }
+
+  footer {
+    margin-top: 64px; padding: 28px 20px 40px;
+    border-top: 1px solid var(--line);
+    text-align: center; font-size: 13px; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="wrap">
+    <a class="brand" href="#top">Caldera Sonos <span>Bridge</span></a>
+    <a href="#why">Why</a>
+    <a href="#how">How it works</a>
+    <a href="#install">Install</a>
+    <a href="#updates">Updates</a>
+    <a href="#env">Environment</a>
+    <a href="#trouble">Troubleshooting</a>
+    <a class="gh" href="https://github.com/meltface-80/Caldera-Sonos-Bridge">GitHub&nbsp;&rarr;</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wordmark">Caldera Sonos <span>Bridge</span></div>
+  <h1>Play Plex music to Sonos, from Plexamp</h1>
+  <p class="tag">Every Sonos room in the house appears in Plexamp as its own player.
+     Pick one, and your Plex library plays on that speaker. Audio streams straight
+     from your Plex server to the speaker &mdash; the bridge never touches it.</p>
+  <div class="badges">
+    <span class="badge">v0.1.1</span>
+    <span class="badge plain">Docker</span>
+    <span class="badge plain">GPL-3.0</span>
+    <span class="badge plain">Sonos only</span>
+  </div>
+</header>
+
+<section id="why">
+  <div class="wrap">
+    <h2>Why this exists</h2>
+    <p class="lead">Plex used to play to Sonos itself. As of a few days ago it stopped.</p>
+    <div class="note">
+      <b>The official route is gone.</b> Plex's own Sonos integration &mdash; the one you set up
+      through your Plex account &mdash; has stopped working, and it is not the only service to have
+      dropped Sonos support. That left a good Plex library and a house full of Sonos speakers with
+      nothing joining them. This bridge is that join, and it depends on nothing but your own
+      network: your Plex server, your speakers, and a small daemon on a machine you own.
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="lead">Plexamp cannot cast to a Sonos speaker, but it can cast to a Plex player.
+       The bridge is one of those per room.</p>
+
+    <div class="flow">
+      <div class="node"><b>Plexamp</b><span>phone, desktop or web</span></div>
+      <div class="arrow">&rarr;</div>
+      <div class="node mid"><b>the bridge</b><span>one Plex player per room</span></div>
+      <div class="arrow">&rarr;</div>
+      <div class="node"><b>Sonos</b><span>your rooms</span></div>
+    </div>
+    <p class="flow-note">Audio does not follow that path. The bridge hands each speaker a URL and
+       Sonos fetches the music straight from your Plex server &mdash; no extra hop, nothing
+       re-encoded on the way through, and nothing for the bridge to be a bottleneck for.</p>
+
+    <div class="grid">
+      <div class="card"><h3><span class="em">&#127925;</span>Bit-perfect where it can be</h3>
+        <p>16/44.1, 16/48, 24/44.1 and 24/48 reach the speaker exactly as Plex stores them.
+           Anything above 24/48 is brought down to 24/48 by your server and stays lossless.</p></div>
+      <div class="card"><h3><span class="em">&#9197;</span>Gapless playback</h3>
+        <p>A window of the Plex queue is loaded onto the speaker, which moves between tracks
+           itself. Skips are instant rather than a round trip.</p></div>
+      <div class="card"><h3><span class="em">&#128266;</span>Group-aware transport</h3>
+        <p>Playing to a grouped room plays to the group, as Sonos does. Volume and mute stay
+           with the individual speaker.</p></div>
+      <div class="card"><h3><span class="em">&#128225;</span>Live state</h3>
+        <p>Pause from the Sonos app and Plexamp's now-playing screen follows. Progress goes back
+           to your server, so play counts and resume points work.</p></div>
+      <div class="card"><h3><span class="em">&#128421;</span>Settings page</h3>
+        <p>A page on port 32700 shows every room, what it is doing, and the settings you can
+           change &mdash; without rewriting the docker run line.</p></div>
+      <div class="card"><h3><span class="em">&#127991;</span>Stable devices</h3>
+        <p>Each room is a separate player with an identity that survives restarts, so Plexamp
+           remembers your speakers.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install with Docker</h2>
+    <p class="lead">On an always-on Linux machine on the same network as your speakers &mdash;
+       a NAS, a Raspberry Pi, a home server.</p>
+
+    <div class="out">
+      <div class="codebox">
+        <button class="copy-btn" id="copy">Copy</button>
+<pre id="cmd">docker run -d \
+  <span class="k">--name</span> caldera-sonos-bridge \
+  <span class="k">--network</span> host \
+  <span class="k">--restart</span> unless-stopped \
+  <span class="k">-v</span> caldera-sonos:/config \
+  ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
+      </div>
+
+      <div class="note">
+        <b>--network host is required.</b> Plex finds players by multicast, and multicast does not
+        cross Docker's default bridge network. It is also how the bridge finds your speakers.
+        Docker Desktop for macOS and Windows has no real host networking, so this needs a Linux host.
+      </div>
+
+      <div class="note">
+        <b>Keep the volume.</b> <code>/config</code> holds your Plex token, your settings and the
+        port each room was given. Without it you re-link after every image pull.
+      </div>
+    </div>
+
+    <div class="firstrun" style="margin-top:22px">
+      <ol>
+        <li>Open <b>http://&lt;host-ip&gt;:32700/</b> &mdash; the settings page lists the Sonos rooms it found.</li>
+        <li>Click <b>Link a Plex account</b> and enter the four-character code at
+            <a href="https://plex.tv/link">plex.tv/link</a>.</li>
+        <li>Open Plexamp. Your rooms are in the list of things to play to.</li>
+      </ol>
+      <p class="fine" style="font-size:12.5px;color:var(--muted);margin-top:12px">
+        Linking is only needed for Plexamp on a phone, which finds players through your account
+        rather than over the network. Desktop Plexamp and Plex Web find the rooms without it.
+        Playback always goes straight to the bridge over your own network.</p>
+    </div>
+  </div>
+</section>
+
+<section id="updates">
+  <div class="wrap">
+    <h2>Updates from the settings page</h2>
+    <p class="lead">The page says which version is running and whether a newer image has been
+       published &mdash; and installs it. No shell, no re-running the docker run line.</p>
+
+    <div class="out">
+      <div class="codebox">
+        <button class="copy-btn" id="copy2">Copy</button>
+<pre id="cmd2">docker run -d \
+  <span class="k">--name</span> caldera-sonos-bridge \
+  <span class="k">--network</span> host \
+  <span class="k">--restart</span> unless-stopped \
+  <span class="k">-v</span> caldera-sonos:/config \
+  <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
+      </div>
+
+      <div class="note">
+        <b>Weigh that up.</b> The extra mount is what lets the container replace itself, and access
+        to the Docker socket is effectively root on the host. It is not in the default command for
+        that reason. Without it the bridge still tells you an update exists; it just cannot install
+        one, and the page says so rather than offering a button that would fail.
+      </div>
+    </div>
+
+    <div class="firstrun" style="margin-top:22px">
+      <ol>
+        <li><b>Install update</b> pulls the new image and builds a container from your existing
+            one's exact configuration &mdash; same environment, same volumes, same network.</li>
+        <li>It hands over the ports and exits. Your settings, Plex link and room ports are in the
+            config volume, so they carry across.</li>
+        <li>If the new container cannot be created or will not start, the old one is put back under
+            its own name and restarts on the previous image.</li>
+        <li>Tick <b>Install updates automatically</b> to check every six hours and apply what it
+            finds.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="env">
+  <div class="wrap">
+    <h2>Environment variables</h2>
+    <p class="lead">All optional; pass any with <code>-e NAME=value</code>. Most can also be changed
+       on the settings page, which then takes precedence.</p>
+    <div class="tablewrap">
+      <table>
+        <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+        <tr><td>NAME_SUFFIX</td><td>" (Sonos)"</td><td>Appended to each room name in Plexamp. Empty for bare room names.</td></tr>
+        <tr><td>HTTP_PORT</td><td>32700</td><td>Port for the settings page.</td></tr>
+        <tr><td>PLAYER_PORT_BASE</td><td>32701</td><td>First port for the per-room players. Plex's own ports are skipped.</td></tr>
+        <tr><td>SONOS_HOSTS</td><td>&mdash;</td><td>A player's IP, for when multicast discovery is unreliable. One is enough.</td></tr>
+        <tr><td>INCLUDE_ZONES</td><td>&mdash;</td><td>Publish only these rooms, e.g. <code>Kitchen,Study</code>.</td></tr>
+        <tr><td>EXCLUDE_ZONES</td><td>&mdash;</td><td>Publish everything except these rooms.</td></tr>
+        <tr><td>STREAM_FORMAT</td><td>original</td><td>Bit-perfect within 24/48, resampled above it. <code>flac</code> or <code>mp3</code> transcode everything.</td></tr>
+        <tr><td>VOLUME_LIMIT</td><td>100</td><td>What Plex's slider at 100% sets the speaker to.</td></tr>
+        <tr><td>UNGROUP_ON_PLAY</td><td>false</td><td>Detach a room from its Sonos group before playing to it.</td></tr>
+        <tr><td>BRIDGE_MODE</td><td>queue</td><td><code>queue</code> for gapless playback; <code>direct</code> loads each track onto the transport.</td></tr>
+        <tr><td>AUTO_UPDATE</td><td>false</td><td>Install a newer image when one appears, without asking.</td></tr>
+        <tr><td>UPDATE_CHECK</td><td>true</td><td>Look for newer images at all.</td></tr>
+        <tr><td>LOG_LEVEL</td><td>INFO</td><td><code>DEBUG</code> logs every Plex command and Sonos action.</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="trouble">
+  <div class="wrap">
+    <h2>Troubleshooting</h2>
+    <p class="lead">Start at <code>http://&lt;host-ip&gt;:32700/</code>, which shows what the bridge
+       can see.</p>
+    <div class="info-cards">
+      <div class="info-card">
+        <span class="sym">No rooms</span>
+        <h3>The table is empty</h3>
+        <p>The bridge has found no players. Check the container really is on host networking and
+           shares a subnet with the speakers. Setting <code>SONOS_HOSTS</code> to one player's IP
+           skips discovery entirely.</p>
+      </div>
+      <div class="info-card">
+        <span class="sym">Not in Plexamp</span>
+        <h3>Rooms listed, but nothing to cast to</h3>
+        <p>On a phone, check the <b>On Plex</b> column says <i>published</i>. On a desktop it is the
+           multicast path &mdash; same subnet, and watch for IGMP snooping or "multicast
+           enhancement" on routers and access points.</p>
+      </div>
+      <div class="info-card">
+        <span class="sym">Silence</span>
+        <h3>Playback starts then stops</h3>
+        <p>Usually a format Sonos will not take. Run with <code>LOG_LEVEL=DEBUG</code> and look for
+           UPnP error 714, or set <code>STREAM_FORMAT=mp3</code> to confirm it is the format rather
+           than the plumbing.</p>
+      </div>
+      <div class="info-card">
+        <span class="sym">Everywhere</span>
+        <h3>One room plays in all of them</h3>
+        <p>The room is grouped in the Sonos app, and transport commands belong to the group
+           coordinator. Ungroup it, or set <code>UNGROUP_ON_PLAY=true</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>Caldera Sonos Bridge · GPL-3.0 · © 2026 Music Duck ·
+     <a href="https://github.com/meltface-80/Caldera-Sonos-Bridge">github.com/meltface-80/Caldera-Sonos-Bridge</a><br>
+     Sonos is a trademark of Sonos, Inc. and Plex is a trademark of Plex GmbH.
+     This is an independent bridge, affiliated with neither, nor with Caldera.</p>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  function wire(btnId, cmdId) {
+  var btn = document.getElementById(btnId);
+  var cmd = document.getElementById(cmdId);
+  if (!btn || !cmd) return;
+
+  btn.addEventListener("click", function () {
+    var text = cmd.innerText;
+
+    function done() {
+      btn.textContent = "Copied ✓";
+      btn.classList.add("done");
+      setTimeout(function () {
+        btn.textContent = "Copy";
+        btn.classList.remove("done");
+      }, 1600);
+    }
+
+    function fallbackCopy() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* no clipboard available — user can select the text manually */ }
+      document.body.removeChild(ta);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallbackCopy);
+    } else fallbackCopy();
+  });
+  }
+
+  wire("copy", "cmd");
+  wire("copy2", "cmd2");
+})();
+</script>
+</body>
+</html>
