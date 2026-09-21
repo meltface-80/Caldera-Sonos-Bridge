@@ -6,7 +6,7 @@
 
 # Caldera Sonos Bridge
 
-**Play your Plex music library to Sonos speakers, from Plexamp.** — v0.1.10
+**Play your Plex music library to Sonos speakers, from Plexamp.** — v0.1.11
 
 **📖 Install guide & docs: [meltface-80.github.io/Caldera-Sonos-Bridge](https://meltface-80.github.io/Caldera-Sonos-Bridge/)**
 
