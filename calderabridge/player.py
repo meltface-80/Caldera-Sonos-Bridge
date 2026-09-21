@@ -88,6 +88,10 @@ class RoomPlayer:
 
         self.state = STATE_STOPPED
         self.position_ms = 0
+        #: When ``position_ms`` was last established from the speaker or a seek.
+        #: Progress is read off the clock from there, so the reported position
+        #: advances second by second instead of standing still between polls.
+        self._position_at = time.monotonic()
         self.volume = 0
         self.muted = False
         self.current: PlexTrack | None = None
@@ -102,6 +106,34 @@ class RoomPlayer:
         self._reported_key = ""
         self._last_report = 0.0
         self._changed = asyncio.Event()
+
+    # ------------------------------------------------------------------
+    # Where playback has actually reached
+    # ------------------------------------------------------------------
+    def _mark_position(self, position_ms: int) -> None:
+        """Record a position and the moment it was true."""
+        self.position_ms = max(0, int(position_ms))
+        self._position_at = time.monotonic()
+
+    @property
+    def position_now_ms(self) -> int:
+        """The position as it stands *now*, not when the speaker was last asked.
+
+        Sonos is polled every few seconds, which is often enough to stay
+        honest and far too seldom to drive a progress bar: reporting the last
+        reading unchanged makes the bar stand still and then jump.  While the
+        music is playing, the clock says what has happened in between.
+        """
+        if self.state != STATE_PLAYING:
+            return self.position_ms
+        elapsed = (time.monotonic() - self._position_at) * 1000.0
+        position = self.position_ms + max(0.0, elapsed)
+        duration = self.current.duration_ms if self.current else 0
+        # Never run past the end: the speaker would have moved on, and the
+        # next poll is what will say so.
+        if duration:
+            position = min(position, duration)
+        return int(position)
 
     # ------------------------------------------------------------------
     # Identity
@@ -259,7 +291,7 @@ class RoomPlayer:
     async def stop(self) -> None:
         await self._transport(lambda p: p.stop())
         self.state = STATE_STOPPED
-        self.position_ms = 0
+        self._mark_position(0)
         self._wake()
 
     async def skip_next(self) -> None:
@@ -270,7 +302,7 @@ class RoomPlayer:
 
     async def skip_previous(self) -> None:
         """Back a track - or back to the start of this one, as players do."""
-        if self.position_ms > 5000:
+        if self.position_now_ms > 5000:
             await self.seek_to(0)
             return
         await self._transport(lambda p: p.previous_track())
@@ -303,11 +335,11 @@ class RoomPlayer:
     async def seek_to(self, offset_ms: int) -> None:
         target = _hms(max(0, offset_ms) / 1000.0)
         await self._transport(lambda p: p.seek("REL_TIME", target))
-        self.position_ms = max(0, offset_ms)
+        self._mark_position(offset_ms)
         self._wake()
 
     async def step(self, seconds: float) -> None:
-        await self.seek_to(int(self.position_ms + seconds * 1000))
+        await self.seek_to(int(self.position_now_ms + seconds * 1000))
 
     async def set_volume(self, volume: int) -> None:
         """Scale Plex's 0-100 onto the room's own ceiling.
@@ -363,7 +395,7 @@ class RoomPlayer:
         self._queue_offset = index
         self._loaded = list(window)
         self.current = window[0]
-        self.position_ms = max(0, offset_ms)
+        self._mark_position(offset_ms)
 
         if offset_ms > 0:
             with contextlib.suppress(UPnPError, TimeoutError):
@@ -393,29 +425,47 @@ class RoomPlayer:
                 await coordinator.set_next_av_transport_uri(next_uri, next_metadata)
 
     async def _track_uri(self, track: PlexTrack) -> tuple[str, str]:
-        """The URL Sonos should fetch, and the metadata that makes it accept it."""
-        uri = self._plex.stream_url(
+        """The URL Sonos should fetch, and the metadata that makes it accept it.
+
+        Every transcode is checked before a speaker is sent to it.  Sonos
+        reports a URL that gives it nothing as a bare stop, which is
+        indistinguishable from the track having ended, so a transcode the
+        server will not actually serve would look exactly like silent success.
+        """
+        candidates = self._plex.stream_candidates(
             self.server,
             track,
             self.config.stream_format,
             self.config.max_bitrate_kbps,
             self._session_id,
         )
-        # A transcode that will not start looks exactly like the end of a track
-        # from the speaker's side, so check it here where it can still be fixed.
-        # Only worth doing when the original would have played anyway.
-        if (
-            "/transcode/" in uri
-            and track.sonos_native
-            and not await self._plex.playable(uri)
-        ):
-            LOGGER.info(
-                "%s: transcoding unavailable, sending the original file", self.zone.name
-            )
-            uri = self.server.url(track.part_key)
-        return uri, self._metadata(uri, track)
+        for index, choice in enumerate(candidates):
+            if not choice.transcoded:
+                return choice.url, self._metadata(choice.url, track, choice.mime)
+            if await self._plex.playable(choice.probe_url):
+                if index:
+                    LOGGER.info(
+                        "%s: the server would not serve %s for %r, using %s",
+                        self.zone.name,
+                        candidates[index - 1].label,
+                        track.title,
+                        choice.label,
+                    )
+                return choice.url, self._metadata(choice.url, track, choice.mime)
 
-    def _metadata(self, uri: str, track: PlexTrack) -> str:
+        # Nothing answered.  Send the best one anyway rather than nothing at
+        # all: the speaker may yet manage what a single ranged request did not.
+        last = candidates[-1]
+        LOGGER.warning(
+            "%s: Plex served none of the stream formats tried for %r; sending %s "
+            "and hoping. Check the server's transcoder.",
+            self.zone.name,
+            track.title,
+            last.label,
+        )
+        return last.url, self._metadata(last.url, track, last.mime)
+
+    def _metadata(self, uri: str, track: PlexTrack, mime: str = "") -> str:
         meta = didl.TrackMetadata(
             title=track.title,
             artist=track.artist,
@@ -425,10 +475,11 @@ class RoomPlayer:
             original_track_number=track.track_number,
             duration=_hms(track.duration_seconds),
         )
-        if "/transcode/" in uri:
-            # The transcode URL has no file extension to infer a type from.
-            fmt = "audio/flac" if uri.endswith(".flac") or ".flac?" in uri else "audio/mpeg"
-            meta.protocol_info = f"http-get:*:{fmt}:*"
+        if mime:
+            # Stated rather than guessed: a transcode URL carries query
+            # parameters after its extension, and Sonos rejects a track whose
+            # declared type does not match what arrives.
+            meta.protocol_info = f"http-get:*:{mime}:*"
         return didl.build(uri, meta)
 
     async def _top_up(self, force: bool = False) -> None:
@@ -488,7 +539,7 @@ class RoomPlayer:
 
         state = _SONOS_STATE.get(transport.get("CurrentTransportState", ""), self.state)
         self.state = state
-        self.position_ms = max(0, int(to_seconds(position.get("RelTime", "")) * 1000))
+        self._mark_position(int(to_seconds(position.get("RelTime", "")) * 1000))
 
         track_number = 0
         with contextlib.suppress(ValueError, TypeError):
@@ -531,7 +582,7 @@ class RoomPlayer:
                 self.server,
                 self.current,
                 self.state,
-                self.position_ms,
+                self.position_now_ms,
                 self.machine_identifier,
                 self.name,
                 self.queue,
@@ -579,7 +630,7 @@ class RoomPlayer:
         if track is not None and self.state != STATE_STOPPED:
             attrs.update(
                 {
-                    "time": max(0, int(self.position_ms)),
+                    "time": self.position_now_ms,
                     "duration": track.duration_ms,
                     "key": track.key,
                     "ratingKey": track.rating_key,
@@ -635,7 +686,7 @@ class RoomPlayer:
                     "title": track.title,
                     "artist": track.artist,
                     "album": track.album,
-                    "positionMs": self.position_ms,
+                    "positionMs": self.position_now_ms,
                     "durationMs": track.duration_ms,
                 }
                 if track and self.state != STATE_STOPPED
