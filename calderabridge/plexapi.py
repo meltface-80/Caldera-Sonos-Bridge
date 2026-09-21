@@ -9,6 +9,7 @@ server's "now playing" and your listening history honest.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field, replace
@@ -54,9 +55,11 @@ def _int(value: str | None, default: int = 0) -> int:
 #: ``192-168-0-57.<32 hex>.plex.direct`` - the hostname Plex hands out for a
 #: server on your own network.  It resolves to the address written into its
 #: first label, and exists so that a browser can reach a private address over a
-#: certificate that publicly validates.
+#: certificate that publicly validates.  The same scheme carries an IPv6
+#: address, as eight groups joined by the same dash:
+#: ``fde1-10fe-0c09-ec91-da9e-f3ff-fe87-a0ad.<32 hex>.plex.direct``.
 PLEX_DIRECT = re.compile(
-    r"^(?P<host>\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})\.[0-9a-f]{16,}\.plex\.direct$",
+    r"^(?P<host>[0-9a-f]{1,4}(?:-[0-9a-f]{1,4})+)\.[0-9a-f]{16,}\.plex\.direct$",
     re.IGNORECASE,
 )
 
@@ -66,10 +69,29 @@ def lan_address(host: str) -> str:
     match = PLEX_DIRECT.match((host or "").strip())
     if not match:
         return ""
-    octets = match.group("host").split("-")
-    if any(not octet.isdigit() or int(octet) > 255 for octet in octets):
+    groups = match.group("host").split("-")
+    # Four groups is a dotted IPv4 address; eight is an IPv6 one written out in
+    # full, because a hostname has no room for the ``::`` shorthand.
+    joiner = "." if len(groups) == 4 else ":"
+    try:
+        return str(ipaddress.ip_address(joiner.join(groups)))
+    except ValueError:
         return ""
-    return ".".join(octets)
+
+
+def _is_ipv6(address: str) -> bool:
+    try:
+        return ipaddress.ip_address((address or "").strip()).version == 6
+    except ValueError:
+        return False
+
+
+def url_host(address: str) -> str:
+    """An address as it goes into a URL - an IPv6 literal needs its brackets."""
+    text = (address or "").strip()
+    if text.startswith("["):
+        return text
+    return f"[{text}]" if _is_ipv6(text) else text
 
 
 def mime_for_uri(uri: str) -> str:
@@ -91,23 +113,56 @@ def _loggable_url(url: str) -> str:
     return re.sub(r"(X-Plex-Token=)[^&]*", r"\1***", url)
 
 
-def client_profile_extra(
-    sample_rate: int = SONOS_MAX_SAMPLE_RATE, bit_depth: int = SONOS_MAX_BIT_DEPTH
-) -> str:
-    """The limitations that pin a FLAC transcode to what Sonos can play.
+#: The name the bridge gives the transcode target it adds to its own profile,
+#: so that a limitation can be pinned to that target and nothing else.
+TRANSCODE_TARGET_ID = "caldera-sonos"
 
-    Plex decides a transcode from the profile the client declares, so this is
-    how "24-bit, 48 kHz, no higher" gets said.  ``isRequired`` makes them hard
-    limits rather than preferences.
+
+def client_profile_extra(
+    container: str = "flac",
+    sample_rate: int = SONOS_MAX_SAMPLE_RATE,
+    bit_depth: int = SONOS_MAX_BIT_DEPTH,
+) -> str:
+    """The client profile a Plex music transcode needs in order to happen.
+
+    This is not a refinement - without it there is no transcode at all.  The
+    server transcodes *for a client*, and it looks the client up in its own
+    table of profiles; a device it does not recognise has none, and a request
+    for which no profile matches is refused with a bare 400.  The server log
+    says so plainly::
+
+        Unable to find client profile for device; platform=, ... model=
+        TranscodeUniversalRequest: unable to find a matching profile
+
+    ``add-transcode-target`` is the documented way for a client to declare the
+    profile it wants rather than be recognised, and ``replace=true`` keeps it
+    from failing against a profile that happens to have one already.
+
+    The limitations then pin that target, and only that target, to what Sonos
+    will take: 24-bit, 48 kHz, no higher.  ``isRequired`` makes them hard
+    limits rather than preferences.  They are scoped to the target rather than
+    to the codec on purpose - a limitation on the codec itself describes what
+    the *source* may be, and would have the server declare a 24/192 file
+    unplayable instead of bringing it down.
+
+    Bit depth is only said for lossless output.  MP3 does not have one, and a
+    limitation naming a property the codec has no notion of is one more thing
+    for the server to disagree with.
     """
-    return "+".join(
-        f"add-limitation(scope=audioCodec&scopeName=flac&type=upperBound"
-        f"&name={name}&value={value}&isRequired=true)"
-        for name, value in (
-            ("audio.samplingRate", sample_rate),
-            ("audio.bitDepth", bit_depth),
-        )
-    )
+    limits: list[tuple[str, int]] = [("audio.samplingRate", sample_rate)]
+    if container != "mp3":
+        limits.append(("audio.bitDepth", bit_depth))
+    directives = [
+        f"add-transcode-target(type=musicProfile&context=streaming&protocol=http"
+        f"&container={container}&audioCodec={container}"
+        f"&id={TRANSCODE_TARGET_ID}&replace=true)"
+    ]
+    directives += [
+        f"add-limitation(scope=transcodeTarget&scopeName={TRANSCODE_TARGET_ID}"
+        f"&type=upperBound&name={name}&value={value}&isRequired=true)"
+        for name, value in limits
+    ]
+    return "+".join(directives)
 
 
 @dataclass
@@ -126,7 +181,7 @@ class PlexServer:
 
     @property
     def base_url(self) -> str:
-        return f"{self.protocol}://{self.address}:{self.port}"
+        return f"{self.protocol}://{url_host(self.address)}:{self.port}"
 
     @property
     def usable(self) -> bool:
@@ -388,7 +443,19 @@ class PlexClient:
             return replace(cached, token=server.token)
 
         chosen = direct if await self.reachable(direct) else server
-        if chosen is direct:
+        if chosen is direct and _is_ipv6(direct.address):
+            # Sonos players speak IPv4 only, so an IPv6 address is no use for
+            # the half of this that matters: the speaker fetching the audio.
+            # The server knows its own addresses, so ask it for the other one.
+            chosen = await self.ipv4_route(direct) or direct
+        if chosen is direct and _is_ipv6(direct.address):
+            LOGGER.warning(
+                "Plex is only reachable over IPv6 at %s. The bridge can talk to "
+                "it, but Sonos players cannot fetch audio over IPv6, so playback "
+                "will fail until the server has an IPv4 address on this network.",
+                direct.base_url,
+            )
+        if chosen is not server:
             LOGGER.info("Reaching Plex directly at %s", chosen.base_url)
         else:
             LOGGER.warning(
@@ -401,6 +468,40 @@ class PlexClient:
             )
         self._routes[server.base_url] = chosen
         return chosen
+
+    async def ipv4_route(self, server: PlexServer) -> PlexServer | None:
+        """The same server at an IPv4 address it says it has, if it answers there.
+
+        ``/servers`` is the server describing itself, which is the only party
+        that knows what else it is listening on.  Everything here is best
+        effort: a server that will not say, or that does not answer where it
+        said, simply leaves the caller with the route it already had.
+        """
+        text = await self._get(server.url("/servers"))
+        if not text:
+            return None
+        try:
+            root = DET.fromstring(text)
+        except Exception as exc:
+            LOGGER.debug("Could not read the server list: %s", exc)
+            return None
+        for node in root:
+            if _localname(node.tag) != "Server":
+                continue
+            named = node.get("machineIdentifier") or ""
+            if server.machine_identifier and named and named != server.machine_identifier:
+                continue
+            for attribute in ("address", "host"):
+                address = (node.get(attribute) or "").strip()
+                try:
+                    if ipaddress.ip_address(address).version != 4:
+                        continue
+                except ValueError:
+                    continue
+                candidate = replace(server, address=address)
+                if await self.reachable(candidate):
+                    return candidate
+        return None
 
     async def reachable(self, server: PlexServer) -> bool:
         """Does this server answer at all?  ``/identity`` needs no token."""
@@ -574,40 +675,51 @@ class PlexClient:
     ) -> str:
         """A universal-transcoder URL.
 
-        The ``X-Plex-*`` identity belongs in the query string, not in headers.
-        The transcoder decides what to produce from the profile of the client
-        it is producing it *for*, and a request that names no client is refused
-        outright - a plain 400, whatever else is right about it.  Headers are
-        no substitute here: the consumer of this URL is a Sonos player, which
-        sends none.
+        Everything the server needs in order to say yes goes in the query
+        string, not in headers.  The consumer of this URL is a Sonos player
+        fetching it for itself, and it sends no Plex headers at all - so a
+        request that depends on one is a request that works from here and
+        fails from the speaker.
+
+        Two things have to be said or the answer is a bare 400.  Who the
+        client is, which is the ``X-Plex-*`` identity, and *what profile to
+        transcode for*, which is ``X-Plex-Client-Profile-Extra``.  The second
+        is the one that is easy to miss: naming the client is not enough when
+        the server has never heard of it, because it then has no profile to
+        look up and no target to produce, and it refuses rather than guess.
 
         The output format comes from the extension.  There is no parameter for
         it, and inventing one only adds something else to be rejected.
         """
+        container = "flac" if codec == "flac" else "mp3"
         params: dict[str, object] = {
             "path": track.key or f"/library/metadata/{track.rating_key}",
             "mediaIndex": 0,
             "partIndex": 0,
             "protocol": "http",
             "hasMDE": 1,
+            "download": 0,
             "directPlay": 0,
             "directStream": 0,
+            "directStreamAudio": 0,
             "musicBitrate": max_bitrate_kbps or "",
             "session": session_id or "",
+            "X-Plex-Session-Identifier": session_id or "caldera-sonos-bridge",
             "X-Plex-Client-Identifier": client_id or "caldera-sonos-bridge",
             "X-Plex-Product": PLEX_PRODUCT,
             "X-Plex-Version": BRIDGE_VERSION,
             "X-Plex-Platform": "Linux",
+            "X-Plex-Platform-Version": BRIDGE_VERSION,
             "X-Plex-Device": "Sonos",
+            "X-Plex-Device-Name": "Sonos",
             "X-Plex-Model": "sonos",
+            # The profile is what turns "transcode this" into something the
+            # server can actually do, and it is also where the 24/48 ceiling
+            # is said. Without it the server is free to hand back 24/192 -
+            # assuming it hands back anything at all.
+            "X-Plex-Client-Profile-Extra": client_profile_extra(container),
         }
-        if codec == "flac":
-            # Telling the server what the *client* can take is how a Plex
-            # transcode is steered.  Without these the server is free to hand
-            # back 24/192 FLAC, which is exactly what the speaker cannot play.
-            params["X-Plex-Client-Profile-Extra"] = client_profile_extra()
-        suffix = "flac" if codec == "flac" else "mp3"
-        return server.url(f"/music/:/transcode/universal/start.{suffix}", **params)
+        return server.url(f"/music/:/transcode/universal/start.{container}", **params)
 
     async def playable(self, url: str, client_id: str = "") -> bool:
         """Will this URL actually serve audio?

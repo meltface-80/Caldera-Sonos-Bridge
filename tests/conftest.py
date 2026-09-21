@@ -238,12 +238,15 @@ class FakePlex:
         #: Some server builds do not answer the lossless endpoint at all.
         self.flac_ok = True
         self.metadata_ok = True
+        #: The address this server claims for itself on /servers.
+        self.servers_address = "127.0.0.1"
         self.queue_ok = True
         self.port = 0
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
         app = web.Application()
+        app.router.add_get("/servers", self._servers)
         app.router.add_get("/playQueues/{pq}", self._play_queue)
         app.router.add_get("/library/metadata/{key}", self._metadata)
         app.router.add_get("/:/timeline", self._timeline)
@@ -267,6 +270,20 @@ class FakePlex:
             port=self.port,
             protocol="http",
             token=token,
+        )
+
+    async def _servers(self, request: web.Request) -> web.Response:
+        """The server describing its own addresses, as PMS does."""
+        self.requests.append(str(request.rel_url))
+        return web.Response(
+            text=(
+                '<MediaContainer size="1">'
+                f'<Server machineIdentifier="pms-abc" name="Fake"'
+                f' host="{self.servers_address}" address="{self.servers_address}"'
+                f' port="{self.port}"/>'
+                "</MediaContainer>"
+            ),
+            content_type="text/xml",
         )
 
     async def _play_queue(self, request: web.Request) -> web.Response:
