@@ -444,7 +444,7 @@ async def test_hi_res_tracks_reach_sonos_as_flac(
     await player.play_media(play_params(fake_plex))
 
     for uri, metadata in fake_sonos.queue:
-        assert "start.flac" in uri
+        assert "container%3Dflac" in uri
         assert "audio/flac" in metadata
 
 
@@ -539,9 +539,9 @@ async def test_hi_res_uses_the_lossless_endpoint_when_the_server_serves_it(
     await player.play_media(play_params(fake_plex))
 
     for uri, metadata in fake_sonos.queue:
-        assert "start.flac" in uri
+        assert "container%3Dflac" in uri
         assert "audio/flac" in metadata
-    assert fake_plex.transcode_requests("start.flac")
+    assert fake_plex.transcode_requests("flac")
 
 
 async def test_hi_res_falls_back_when_the_server_will_not_serve_lossless(
@@ -555,7 +555,7 @@ async def test_hi_res_falls_back_when_the_server_will_not_serve_lossless(
 
     assert fake_sonos.queue, "the track should still play"
     for uri, metadata in fake_sonos.queue:
-        assert "start.mp3" in uri
+        assert "container%3Dmp3" in uri
         assert "audio/mpeg" in metadata
 
 

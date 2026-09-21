@@ -113,11 +113,6 @@ def _loggable_url(url: str) -> str:
     return re.sub(r"(X-Plex-Token=)[^&]*", r"\1***", url)
 
 
-#: The name the bridge gives the transcode target it adds to its own profile,
-#: so that a limitation can be pinned to that target and nothing else.
-TRANSCODE_TARGET_ID = "caldera-sonos"
-
-
 def client_profile_extra(
     container: str = "flac",
     sample_rate: int = SONOS_MAX_SAMPLE_RATE,
@@ -125,25 +120,26 @@ def client_profile_extra(
 ) -> str:
     """The client profile a Plex music transcode needs in order to happen.
 
-    This is not a refinement - without it there is no transcode at all.  The
-    server transcodes *for a client*, and it looks the client up in its own
-    table of profiles; a device it does not recognise has none, and a request
-    for which no profile matches is refused with a bare 400.  The server log
-    says so plainly::
+    This is not a refinement - without it there is no transcode at all.  Plex
+    transcodes *for a client*, and it looks the client up in its own table of
+    profiles.  When nothing in that table offers music over plain HTTP, the
+    decision engine has nowhere to go and the request is refused::
 
-        Unable to find client profile for device; platform=, ... model=
-        TranscodeUniversalRequest: unable to find a matching profile
+        MDE: Selected protocol http; container:
+        ...: Direct Playing due to no transcode profile
+        Reached Decision codes=(... Transcode=4005,Cannot convert this item.
+                                    No conversion profile found for protocol http.)
 
-    ``add-transcode-target`` is the documented way for a client to declare the
-    profile it wants rather than be recognised, and ``replace=true`` keeps it
-    from failing against a profile that happens to have one already.
+    ``add-transcode-target`` is how a client declares the target it wants
+    instead of waiting to be recognised, and ``replace=true`` - written first,
+    as Plex's own clients write it - puts it in place of whatever the matched
+    profile had.
 
-    The limitations then pin that target, and only that target, to what Sonos
-    will take: 24-bit, 48 kHz, no higher.  ``isRequired`` makes them hard
-    limits rather than preferences.  They are scoped to the target rather than
-    to the codec on purpose - a limitation on the codec itself describes what
-    the *source* may be, and would have the server declare a 24/192 file
-    unplayable instead of bringing it down.
+    The ceiling is then said as limitations on the codec being produced, with
+    ``onlyTranscodes`` so that they describe the output and not the input.
+    That distinction is the whole game: without it, a 24/192 file is measured
+    against the limit it is meant to be brought *under*, and the server calls
+    it unplayable rather than converting it.
 
     Bit depth is only said for lossless output.  MP3 does not have one, and a
     limitation naming a property the codec has no notion of is one more thing
@@ -153,13 +149,12 @@ def client_profile_extra(
     if container != "mp3":
         limits.append(("audio.bitDepth", bit_depth))
     directives = [
-        f"add-transcode-target(type=musicProfile&context=streaming&protocol=http"
-        f"&container={container}&audioCodec={container}"
-        f"&id={TRANSCODE_TARGET_ID}&replace=true)"
+        f"add-transcode-target(replace=true&type=musicProfile&context=streaming"
+        f"&protocol=http&container={container}&audioCodec={container})"
     ]
     directives += [
-        f"add-limitation(scope=transcodeTarget&scopeName={TRANSCODE_TARGET_ID}"
-        f"&type=upperBound&name={name}&value={value}&isRequired=true)"
+        f"add-limitation(scope=musicCodec&scopeName={container}&type=upperBound"
+        f"&name={name}&value={value}&onlyTranscodes=true&replace=true)"
         for name, value in limits
     ]
     return "+".join(directives)
@@ -238,6 +233,19 @@ def _probe(session_id: str) -> str:
     good way to be handed a stream that has already been consumed.
     """
     return f"{session_id or 'caldera'}-probe"
+
+
+def _track_session(session_id: str, track: PlexTrack) -> str:
+    """A transcode session of this track's own.
+
+    A Plex transcode session belongs to one track, and starting a second on
+    the same id ends the first.  Sonos loads a queue ahead of itself, so a
+    room sharing one id across its queue would have each track it prepares
+    cut the stream out from under the track that is playing.
+    """
+    tag = track.play_queue_item_id or track.rating_key
+    base = session_id or "caldera"
+    return f"{base}-{tag}" if tag else base
 
 
 @dataclass
@@ -603,10 +611,11 @@ class PlexClient:
         lossless if the server will do it, and become high-bitrate MP3 if it
         will not.  Either beats silence.
         """
+        session = _track_session(session_id, track)
         lossless = StreamChoice(
-            url=self.transcode_url(server, track, "flac", 0, session_id, client_id),
+            url=self.transcode_url(server, track, "flac", 0, session, client_id),
             probe_url=self.transcode_url(
-                server, track, "flac", 0, _probe(session_id), client_id
+                server, track, "flac", 0, _probe(session), client_id
             ),
             transcoded=True,
             label="FLAC 24/48",
@@ -618,7 +627,7 @@ class PlexClient:
                 track,
                 "mp3",
                 max_bitrate_kbps or MP3_FALLBACK_KBPS,
-                session_id,
+                session,
                 client_id,
             ),
             probe_url=self.transcode_url(
@@ -626,7 +635,7 @@ class PlexClient:
                 track,
                 "mp3",
                 max_bitrate_kbps or MP3_FALLBACK_KBPS,
-                _probe(session_id),
+                _probe(session),
                 client_id,
             ),
             transcoded=True,
@@ -681,45 +690,39 @@ class PlexClient:
         request that depends on one is a request that works from here and
         fails from the speaker.
 
-        Two things have to be said or the answer is a bare 400.  Who the
-        client is, which is the ``X-Plex-*`` identity, and *what profile to
-        transcode for*, which is ``X-Plex-Client-Profile-Extra``.  The second
-        is the one that is easy to miss: naming the client is not enough when
-        the server has never heard of it, because it then has no profile to
-        look up and no target to produce, and it refuses rather than guess.
+        This is deliberately the shape a Plex client of its own uses, down to
+        the endpoint and the order of the profile arguments, because that
+        shape demonstrably produces audio and near neighbours of it
+        demonstrably do not.  Notably there is no extension: the output
+        format is decided by the transcode target in the profile, not by the
+        path, and ``/music/:/transcode/universal/start.flac`` gets as far as
+        the decision engine only to be refused there.
 
-        The output format comes from the extension.  There is no parameter for
-        it, and inventing one only adds something else to be rejected.
+        The identity stays neutral on purpose.  Announcing ``Sonos`` matches
+        Plex's own built-in Sonos profile, which offers no music over plain
+        HTTP and, being already furnished, quietly swallows the target this
+        request is trying to add.  Unrecognised is the better answer: it
+        lands on Generic, which takes the declared target as given.
         """
         container = "flac" if codec == "flac" else "mp3"
         params: dict[str, object] = {
             "path": track.key or f"/library/metadata/{track.rating_key}",
-            "mediaIndex": 0,
-            "partIndex": 0,
-            "protocol": "http",
-            "hasMDE": 1,
-            "download": 0,
             "directPlay": 0,
             "directStream": 0,
-            "directStreamAudio": 0,
             "musicBitrate": max_bitrate_kbps or "",
             "session": session_id or "",
-            "X-Plex-Session-Identifier": session_id or "caldera-sonos-bridge",
             "X-Plex-Client-Identifier": client_id or "caldera-sonos-bridge",
             "X-Plex-Product": PLEX_PRODUCT,
             "X-Plex-Version": BRIDGE_VERSION,
             "X-Plex-Platform": "Linux",
             "X-Plex-Platform-Version": BRIDGE_VERSION,
-            "X-Plex-Device": "Sonos",
-            "X-Plex-Device-Name": "Sonos",
-            "X-Plex-Model": "sonos",
+            "X-Plex-Device": "Linux",
             # The profile is what turns "transcode this" into something the
-            # server can actually do, and it is also where the 24/48 ceiling
-            # is said. Without it the server is free to hand back 24/192 -
-            # assuming it hands back anything at all.
+            # server has any way to do, and it is also where the 24/48
+            # ceiling is said.
             "X-Plex-Client-Profile-Extra": client_profile_extra(container),
         }
-        return server.url(f"/music/:/transcode/universal/start.{container}", **params)
+        return server.url("/audio/:/transcode/universal/start", **params)
 
     async def playable(self, url: str, client_id: str = "") -> bool:
         """Will this URL actually serve audio?

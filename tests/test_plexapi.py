@@ -124,8 +124,10 @@ async def test_stream_url_transcodes_when_asked(plex_client):
     track = parse_play_queue(play_queue_xml(1)).tracks[0]
 
     url = plex_client.stream_url(server, track, "mp3", max_bitrate_kbps=320)
-    # The extension picks the output format; there is no parameter for it.
-    assert "/music/:/transcode/universal/start.mp3" in url
+    # The declared profile picks the output format. There is no parameter for
+    # it and no extension either: the path is the same for every format.
+    assert "/audio/:/transcode/universal/start?" in url
+    assert "container%3Dmp3" in url
     assert "musicBitrate=320" in url
 
 
@@ -142,7 +144,7 @@ async def test_a_bitrate_ceiling_is_not_applied_to_flac(plex_client):
     track = parse_play_queue(play_queue_xml(1)).tracks[0]
 
     url = plex_client.stream_url(server, track, "flac", max_bitrate_kbps=320)
-    assert "start.flac" in url
+    assert "container%3Dflac" in url
     assert "musicBitrate" not in url
 
 
@@ -201,8 +203,8 @@ async def test_hi_res_is_resampled_to_lossless_flac_not_mp3(plex_client):
     url = plex_client.stream_url(server, track, "original")
     # Dropping a 24/192 master to MP3 would be a far bigger loss than the
     # resample it actually needs.
-    assert "start.flac" in url
-    assert "start.mp3" not in url
+    assert "container%3Dflac" in url
+    assert "container%3Dmp3" not in url
 
 
 async def test_the_resample_target_is_pinned_to_24_48(plex_client):
@@ -219,7 +221,7 @@ async def test_the_resample_target_is_pinned_to_24_48(plex_client):
     assert "value=48000" in profile
     assert "audio.bitDepth" in profile
     assert "value=24" in profile
-    assert "isRequired=true" in profile
+    assert "onlyTranscodes=true" in profile
 
 
 async def test_within_the_ceiling_nothing_is_transcoded(plex_client):
@@ -247,8 +249,8 @@ async def test_mp3_is_only_chosen_when_it_is_asked_for(plex_client):
     server = PlexServer(address="10.0.0.5", token="tok")
     track = parse_play_queue(play_queue_xml(1)).tracks[0]
 
-    assert "start.mp3" in plex_client.stream_url(server, track, "mp3")
-    assert "start.flac" in plex_client.stream_url(server, track, "flac")
+    assert "container%3Dmp3" in plex_client.stream_url(server, track, "mp3")
+    assert "container%3Dflac" in plex_client.stream_url(server, track, "flac")
 
 
 # ----------------------------------------------------------------------
@@ -506,7 +508,7 @@ async def test_a_transcode_url_declares_the_profile_to_transcode_for(plex_client
         assert "replace=true" in extra
 
 
-async def test_the_ceiling_is_pinned_to_the_target_not_to_the_source(plex_client):
+async def test_the_ceiling_describes_the_output_not_the_source(plex_client):
     from urllib.parse import parse_qs, urlparse
 
     server = PlexServer(address="10.0.0.5", token="tok")
@@ -514,14 +516,14 @@ async def test_the_ceiling_is_pinned_to_the_target_not_to_the_source(plex_client
     url = plex_client.transcode_url(server, track, "flac", 0, "s", "room-1")
     extra = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
 
-    # transcodeTarget is what the limitation is for: it caps what comes out.
-    # Scoped to the codec instead, it would describe what may go in, and a
-    # 24/192 file would be declared unplayable rather than brought down.
-    assert "scope=transcodeTarget" in extra
-    assert "audioCodec" not in extra.split("add-limitation", 1)[1]
+    # The limitation is on the codec being produced, and onlyTranscodes is
+    # what keeps it about the output. Without that, a 24/192 source is
+    # measured against the very limit it is meant to be brought under, and
+    # the server calls it unplayable instead of converting it.
+    assert "scope=musicCodec&scopeName=flac" in extra
     assert "name=audio.samplingRate&value=48000" in extra
     assert "name=audio.bitDepth&value=24" in extra
-    assert "isRequired=true" in extra
+    assert extra.count("onlyTranscodes=true") == 2
 
 
 async def test_mp3_is_not_given_a_bit_depth_it_does_not_have(plex_client):
@@ -551,6 +553,41 @@ async def test_the_profile_extra_survives_the_query_string(plex_client):
     extra = parse_qs(urlparse(url).query)["X-Plex-Client-Profile-Extra"][0]
     assert extra.count("+") == 2
     assert parse_qs(urlparse(url).query)["path"] == ["/library/metadata/101"]
+
+
+async def test_the_identity_does_not_claim_to_be_sonos(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    query = parse_qs(urlparse(plex_client.transcode_url(server, track)).query)
+
+    # Saying "Sonos" matches Plex's own built-in Sonos profile, which offers
+    # no music over plain HTTP and, being already furnished, swallows the
+    # transcode target this request is trying to add. Unrecognised is better:
+    # it lands on Generic, which takes the declared target as given.
+    assert "Sonos" not in query.get("X-Plex-Device", [""])[0]
+    assert "X-Plex-Model" not in query
+
+
+async def test_each_track_gets_a_transcode_session_of_its_own(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    queue = parse_play_queue(play_queue_xml(3, sample_rate=192000, bit_depth=24))
+
+    sessions = set()
+    for track in queue.tracks:
+        choice = plex_client.stream_candidates(
+            server, track, "original", 0, "caldera-room", "room-1"
+        )[0]
+        sessions.add(parse_qs(urlparse(choice.url).query)["session"][0])
+
+    # A Plex transcode session belongs to one track, and starting a second on
+    # the same id ends the first. Sonos loads its queue ahead of itself, so
+    # one id per room would have each track it prepares cut the stream out
+    # from under the track that is playing.
+    assert len(sessions) == len(queue.tracks)
 
 
 async def test_no_invented_codec_parameter(plex_client):
