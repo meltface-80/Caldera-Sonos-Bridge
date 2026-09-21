@@ -224,6 +224,7 @@
     <a href="#why">Why</a>
     <a href="#how">How it works</a>
     <a href="#install">Install</a>
+    <a href="#updates">Updates</a>
     <a href="#env">Environment</a>
     <a href="#trouble">Troubleshooting</a>
     <a class="gh" href="https://github.com/meltface-80/Caldera-Sonos-Bridge">GitHub&nbsp;&rarr;</a>
@@ -237,7 +238,7 @@
      Pick one, and your Plex library plays on that speaker. Audio streams straight
      from your Plex server to the speaker &mdash; the bridge never touches it.</p>
   <div class="badges">
-    <span class="badge">v0.1.0</span>
+    <span class="badge">v0.1.1</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">GPL-3.0</span>
     <span class="badge plain">Sonos only</span>
@@ -342,6 +343,47 @@
   </div>
 </section>
 
+<section id="updates">
+  <div class="wrap">
+    <h2>Updates from the settings page</h2>
+    <p class="lead">The page says which version is running and whether a newer image has been
+       published &mdash; and installs it. No shell, no re-running the docker run line.</p>
+
+    <div class="out">
+      <div class="codebox">
+        <button class="copy-btn" id="copy2">Copy</button>
+<pre id="cmd2">docker run -d \
+  <span class="k">--name</span> caldera-sonos-bridge \
+  <span class="k">--network</span> host \
+  <span class="k">--restart</span> unless-stopped \
+  <span class="k">-v</span> caldera-sonos:/config \
+  <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
+      </div>
+
+      <div class="note">
+        <b>Weigh that up.</b> The extra mount is what lets the container replace itself, and access
+        to the Docker socket is effectively root on the host. It is not in the default command for
+        that reason. Without it the bridge still tells you an update exists; it just cannot install
+        one, and the page says so rather than offering a button that would fail.
+      </div>
+    </div>
+
+    <div class="firstrun" style="margin-top:22px">
+      <ol>
+        <li><b>Install update</b> pulls the new image and builds a container from your existing
+            one's exact configuration &mdash; same environment, same volumes, same network.</li>
+        <li>It hands over the ports and exits. Your settings, Plex link and room ports are in the
+            config volume, so they carry across.</li>
+        <li>If the new container cannot be created or will not start, the old one is put back under
+            its own name and restarts on the previous image.</li>
+        <li>Tick <b>Install updates automatically</b> to check every six hours and apply what it
+            finds.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
 <section id="env">
   <div class="wrap">
     <h2>Environment variables</h2>
@@ -360,6 +402,8 @@
         <tr><td>VOLUME_LIMIT</td><td>100</td><td>What Plex's slider at 100% sets the speaker to.</td></tr>
         <tr><td>UNGROUP_ON_PLAY</td><td>false</td><td>Detach a room from its Sonos group before playing to it.</td></tr>
         <tr><td>BRIDGE_MODE</td><td>queue</td><td><code>queue</code> for gapless playback; <code>direct</code> loads each track onto the transport.</td></tr>
+        <tr><td>AUTO_UPDATE</td><td>false</td><td>Install a newer image when one appears, without asking.</td></tr>
+        <tr><td>UPDATE_CHECK</td><td>true</td><td>Look for newer images at all.</td></tr>
         <tr><td>LOG_LEVEL</td><td>INFO</td><td><code>DEBUG</code> logs every Plex command and Sonos action.</td></tr>
       </table>
     </div>
@@ -414,8 +458,9 @@
 (function () {
   "use strict";
 
-  var btn = document.getElementById("copy");
-  var cmd = document.getElementById("cmd");
+  function wire(btnId, cmdId) {
+  var btn = document.getElementById(btnId);
+  var cmd = document.getElementById(cmdId);
   if (!btn || !cmd) return;
 
   btn.addEventListener("click", function () {
@@ -444,6 +489,10 @@
       navigator.clipboard.writeText(text).then(done, fallbackCopy);
     } else fallbackCopy();
   });
+  }
+
+  wire("copy", "cmd");
+  wire("copy2", "cmd2");
 })();
 </script>
 </body>

@@ -38,6 +38,9 @@ def create_app(bridge) -> web.Application:
     app.router.add_post("/plex/link", handle_link)
     app.router.add_get("/plex/link", handle_link_status)
     app.router.add_post("/plex/unlink", handle_unlink)
+    app.router.add_get("/update", handle_update_status)
+    app.router.add_post("/update/check", handle_update_check)
+    app.router.add_post("/update", handle_update_install)
     app.router.add_get("/room/{uid}/icon.svg", handle_icon_svg)
     app.router.add_get("/room/{uid}/icon/{size}.png", handle_icon_png)
     return app
@@ -88,7 +91,7 @@ def _from_form(form) -> dict[str, object]:
     for key in EDITABLE:
         if f"_present_{key}" not in form:
             continue
-        if key in ("ungroup_on_play",):
+        if key in ("ungroup_on_play", "auto_update"):
             updates[key] = form.get(key, "") in ("on", "1", "true")
         else:
             updates[key] = form.get(key, "")
@@ -117,6 +120,33 @@ async def handle_link_status(request: web.Request) -> web.Response:
 async def handle_unlink(request: web.Request) -> web.Response:
     await _bridge(request).unlink()
     raise web.HTTPFound("/")
+
+
+# ----------------------------------------------------------------------
+# Updates
+# ----------------------------------------------------------------------
+async def handle_update_status(request: web.Request) -> web.Response:
+    return web.json_response(await _bridge(request).update_status())
+
+
+async def handle_update_check(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(await _bridge(request).check_for_update())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+async def handle_update_install(request: web.Request) -> web.Response:
+    """Start the handover and answer at once.
+
+    The answer has to be on its way before the work begins: installing means
+    this container gives up the port this page is served on.
+    """
+    try:
+        await _bridge(request).begin_update()
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    return web.json_response({"started": True})
 
 
 # ----------------------------------------------------------------------
@@ -177,6 +207,56 @@ def _plex_cell(status: dict, room: dict) -> str:
         '<span class=bad>not published</span><br>'
         "<span class=dim>a phone will not see this room</span>"
     )
+
+
+def _update_card(status: dict) -> str:
+    """Where the running version stands, and what can be done about it."""
+    update = status.get("update") or {}
+    version = _esc(update.get("version") or BRIDGE_VERSION)
+    image = _esc(update.get("image") or "")
+    lines = [f"<p>Running <strong>v{version}</strong>"]
+    if image:
+        lines.append(f" from <code>{image}</code>")
+    lines.append(".</p>")
+
+    if update.get("state") == "installing":
+        return (
+            "<section class=card id=updates><h2>Updates</h2>"
+            + "".join(lines)
+            + '<p class=ok id=updatemsg>Installing. This page will come back on its '
+            "own once the new version is running.</p></section>"
+        )
+    if update.get("state") == "failed":
+        lines.append(f'<p class=bad>{_esc(update.get("message"))}</p>')
+
+    if not update.get("canInstall"):
+        lines.append(
+            f'<p class=note>{_esc(update.get("reason") or "")}</p>'
+            "<p class=note>To let the bridge update itself, add "
+            "<code>-v /var/run/docker.sock:/var/run/docker.sock</code> to the "
+            "<code>docker run</code> line. That is root on the host, so it is "
+            "off unless you ask for it.</p>"
+        )
+    elif not update.get("checkable"):
+        lines.append(f'<p class=note>{_esc(update.get("reason") or "")}</p>')
+    elif update.get("updateAvailable"):
+        lines.append('<p class=ok>A newer image is published.</p>')
+    elif update.get("lastChecked"):
+        lines.append(
+            f'<p class=dim>Up to date, as of {_esc(update.get("lastChecked"))}.</p>'
+        )
+    if update.get("error"):
+        lines.append(f'<p class=dim>{_esc(update.get("error"))}</p>')
+
+    buttons = ['<button type=button class=link id=checkbtn>Check now</button>']
+    if update.get("canInstall"):
+        label = "Install update" if update.get("updateAvailable") else "Reinstall"
+        buttons.insert(
+            0, f'<button type=button class=primary id=updatebtn>{label}</button>'
+        )
+    lines.append(f'<div class=actions>{"".join(buttons)}</div>')
+    lines.append('<p class=note id=updatemsg style="display:none"></p>')
+    return "<section class=card id=updates><h2>Updates</h2>" + "".join(lines) + "</section>"
 
 
 def _rooms_table(status: dict) -> str:
@@ -352,6 +432,13 @@ def _settings_form(status: dict) -> str:
                 "are read from the household topology.",
             ),
             f(
+                "auto_update",
+                "Install updates automatically",
+                _checkbox("auto_update", settings["auto_update"]),
+                "Check periodically and install a new image without asking. Needs "
+                "the Docker socket mounted; see Updates above.",
+            ),
+            f(
                 "log_level",
                 "Log level",
                 _select("log_level", settings["log_level"], ("DEBUG", "INFO", "WARNING", "ERROR")),
@@ -423,6 +510,51 @@ if (linkbtn) {
     }
   });
 }
+
+const updatebtn = document.getElementById('updatebtn');
+const checkbtn = document.getElementById('checkbtn');
+const updatemsg = document.getElementById('updatemsg');
+
+function say(text, bad) {
+  if (!updatemsg) return;
+  updatemsg.style.display = '';
+  updatemsg.textContent = text;
+  updatemsg.className = bad ? 'bad' : 'note';
+}
+
+if (checkbtn) checkbtn.addEventListener('click', async () => {
+  checkbtn.disabled = true;
+  say('Asking the registry\u2026');
+  try {
+    const s = await (await fetch('/update/check', {method: 'POST'})).json();
+    if (s.error) say(s.error, true);
+    else location.reload();
+  } catch (e) { say(e.message, true); }
+  checkbtn.disabled = false;
+});
+
+// The bridge gives up this port partway through installing, so the page has to
+// expect to lose it and wait for the new one to answer rather than treat the
+// dropped connection as a failure.
+if (updatebtn) updatebtn.addEventListener('click', async () => {
+  updatebtn.disabled = true;
+  try {
+    const res = await fetch('/update', {method: 'POST'});
+    const body = await res.json();
+    if (!res.ok) { say(body.error || 'could not start', true); updatebtn.disabled = false; return; }
+  } catch (e) { say(e.message, true); updatebtn.disabled = false; return; }
+
+  say('Installing. This page will come back on its own once the new version is running\u2026');
+  let tries = 0;
+  const wait = setInterval(async () => {
+    tries += 1;
+    try {
+      const r = await fetch('/status.json', {cache: 'no-store'});
+      if (r.ok) { clearInterval(wait); location.reload(); return; }
+    } catch (e) { /* expected: the old container is going away */ }
+    if (tries > 120) { clearInterval(wait); say('The new version has not come back. Check the container logs.', true); }
+  }, 2000);
+});
 
 // Keep the rooms table live without reloading the settings form under the user.
 setInterval(async () => {
@@ -554,6 +686,8 @@ GDM is {gdm}.</p>
 {banner}
 
 {_plex_card(status)}
+
+{_update_card(status)}
 
 <section class=card><h2>Rooms</h2>
 <table><thead><tr>

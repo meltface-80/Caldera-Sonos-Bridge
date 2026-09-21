@@ -23,6 +23,19 @@ class StubBridge:
         self.username = ""
         self.unlinked = False
         self.link_error = ""
+        self.checked = False
+        self.updating = False
+        self.update_error = ""
+        self.update = {
+            "version": "0.1.1",
+            "image": "ghcr.io/meltface-80/caldera-sonos-bridge:latest",
+            "canInstall": True,
+            "checkable": True,
+            "updateAvailable": False,
+            "lastChecked": "2026-09-21 10:00:00",
+            "error": "",
+            "autoUpdate": False,
+        }
 
     def player_for_zone(self, uid):
         return self.players.get(uid)
@@ -42,6 +55,7 @@ class StubBridge:
             "plex": {"linked": self.linked, "username": self.username, "servers": []},
             "settings": self.settings.current(),
             "overridden": sorted(self.config.overridden),
+            "update": dict(self.update),
             "rooms": rooms,
         }
         payload["roomsHtml"] = settings_web.rooms_html(payload)
@@ -74,6 +88,19 @@ class StubBridge:
     async def unlink(self):
         self.unlinked = True
         self.linked = False
+
+    # -- updates --------------------------------------------------------
+    async def update_status(self):
+        return dict(self.update)
+
+    async def check_for_update(self):
+        self.checked = True
+        return dict(self.update)
+
+    async def begin_update(self):
+        if self.update_error:
+            raise RuntimeError(self.update_error)
+        self.updating = True
 
 
 @pytest.fixture
@@ -313,3 +340,78 @@ async def test_the_empty_state_is_not_given_a_stray_label(client, config):
     async with TestClient(TestServer(create_app(StubBridge(config)))) as empty:
         body = await (await empty.get("/")).text()
         assert "class=empty" in body
+
+
+# ----------------------------------------------------------------------
+# Updates
+# ----------------------------------------------------------------------
+async def test_the_page_shows_the_running_version_and_image(client):
+    body = await (await client.get("/")).text()
+    assert "v0.1.1" in body
+    assert "ghcr.io/meltface-80/caldera-sonos-bridge:latest" in body
+    assert "Check now" in body
+
+
+async def test_an_available_update_offers_to_install_it(client, bridge):
+    bridge.update["updateAvailable"] = True
+    body = await (await client.get("/")).text()
+    assert "A newer image is published" in body
+    assert "Install update" in body
+
+
+async def test_without_the_socket_the_page_says_what_to_add(client, bridge):
+    bridge.update["canInstall"] = False
+    bridge.update["reason"] = "The Docker socket is not mounted."
+    body = await (await client.get("/")).text()
+
+    assert "not mounted" in body
+    assert "/var/run/docker.sock" in body
+    # Nothing to press: it cannot install, and saying otherwise would be a lie.
+    assert "id=updatebtn" not in body
+
+
+async def test_a_locally_built_image_explains_itself(client, bridge):
+    bridge.update["checkable"] = False
+    bridge.update["reason"] = "built on this machine rather than pulled"
+    body = await (await client.get("/")).text()
+    assert "built on this machine" in body
+
+
+async def test_update_status_endpoint(client):
+    status = await (await client.get("/update")).json()
+    assert status["version"] == "0.1.1"
+
+
+async def test_checking_for_an_update(client, bridge):
+    response = await client.post("/update/check")
+    assert response.status == 200
+    assert bridge.checked is True
+
+
+async def test_installing_returns_before_the_work_starts(client, bridge):
+    # The answer has to be on its way before the bridge gives up this port.
+    response = await client.post("/update")
+    assert response.status == 200
+    assert (await response.json())["started"] is True
+    assert bridge.updating is True
+
+
+async def test_an_update_that_cannot_start_says_why(client, bridge):
+    bridge.update_error = "the Docker socket is not mounted"
+    response = await client.post("/update")
+    assert response.status == 409
+    assert "socket" in (await response.json())["error"]
+
+
+async def test_auto_update_is_a_saveable_setting(client, config):
+    await client.post(
+        "/settings",
+        data={"_present_auto_update": "1", "auto_update": "on"},
+        allow_redirects=False,
+    )
+    assert config.auto_update is True
+
+    await client.post(
+        "/settings", data={"_present_auto_update": "1"}, allow_redirects=False
+    )
+    assert config.auto_update is False

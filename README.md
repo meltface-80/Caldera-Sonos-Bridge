@@ -1,6 +1,6 @@
 # Caldera Sonos Bridge
 
-**Play your Plex music library to Sonos speakers, from Plexamp.** — v0.1.0
+**Play your Plex music library to Sonos speakers, from Plexamp.** — v0.1.1
 
 **📖 Install guide & docs: [meltface-80.github.io/Caldera-Sonos-Bridge](https://meltface-80.github.io/Caldera-Sonos-Bridge/)**
 
@@ -60,6 +60,45 @@ That is the whole installation. Then:
 Linking is only needed for **Plexamp on a phone**, which finds players through your Plex account
 rather than over the network. Desktop Plexamp and Plex Web find the rooms without it. Either way,
 playback goes straight to the bridge over your own network — nothing streams through plex.tv.
+
+## Updates
+
+The settings page says which version is running and whether a newer image has been published, and
+will install it — no shell, no re-running the `docker run` line.
+
+Installing needs one addition to that line, because a container can only replace itself if it can
+talk to Docker:
+
+```bash
+docker run -d \
+  --name caldera-sonos-bridge \
+  --network host \
+  --restart unless-stopped \
+  -v caldera-sonos:/config \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/meltface-80/caldera-sonos-bridge:latest
+```
+
+> **Weigh that up.** Access to the Docker socket is effectively root on the host. It is not in the
+> default command for that reason. Without it the bridge still *tells* you an update exists; it
+> just cannot install one, and the page says so rather than offering a button that would fail.
+
+Pressing **Install update** pulls the new image, builds a container from your existing one's exact
+configuration, hands over the ports and exits. Your settings, Plex link and room ports live in the
+config volume, so they carry across. If the new container cannot be created or will not start, the
+old one is put back under its own name and restarts on the previous image.
+
+Tick **Install updates automatically** to have it check every six hours and apply what it finds.
+
+| Variable | Default | | Purpose |
+| --- | --- | --- | --- |
+| `UPDATE_CHECK` | `true` | | Look for newer images at all. |
+| `AUTO_UPDATE` | `false` | ● | Install what it finds, without asking. |
+| `UPDATE_CHECK_INTERVAL` | `21600` | | Seconds between checks. |
+
+Checking compares the digest your container is running against the one the registry currently has,
+so it needs the image to have come *from* a registry. An image you built locally cannot be checked
+against anything, and the page says so.
 
 ## How it works
 

@@ -30,6 +30,7 @@ from .plexapi import PlexClient
 from .plexauth import LinkCode, PlexAccount, PlexAuthError, PlexIdentity
 from .soap import SoapClient
 from .sonos import ZoneInfo
+from .updates import OLD_SUFFIX, UpdateError, Updater
 
 LOGGER = logging.getLogger(__name__)
 
@@ -144,6 +145,11 @@ class Bridge:
         self._tasks: list[asyncio.Task] = []
         self._link: dict[str, object] = {}
         self._link_task: asyncio.Task | None = None
+        self.updater: Updater | None = None
+        self._update_task: asyncio.Task | None = None
+        self._update_state: dict[str, object] = {}
+        #: Set when the bridge has handed over and this process should end.
+        self.exit_requested = asyncio.Event()
         self._started_at = time.time()
 
     # ------------------------------------------------------------------
@@ -165,6 +171,9 @@ class Bridge:
         self.plex = PlexClient(
             self._session, self.config.http_timeout, self.config.verify_ssl
         )
+
+        self.updater = Updater(self._session)
+        await self._tidy_superseded()
 
         soap_client = SoapClient(self._session, self.config.http_timeout)
         self._topology = TopologyManager(
@@ -208,6 +217,7 @@ class Bridge:
             asyncio.create_task(self._topology_loop(), name="topology"),
             asyncio.create_task(self._state_loop(), name="state"),
             asyncio.create_task(self._publish_loop(), name="publish"),
+            asyncio.create_task(self._update_loop(), name="updates"),
         ]
 
         if not self.players:
@@ -431,6 +441,88 @@ class Bridge:
                 with contextlib.suppress(Exception):
                     await self._publish_room(player)
 
+    async def _tidy_superseded(self) -> None:
+        """Clear away the container this one replaced, if it did.
+
+        The outgoing container is left parked rather than deleted, so that a
+        handover which goes wrong can be undone.  Clearing it is the successor's
+        job, once the successor is demonstrably running - which, here, it is.
+        """
+        if self.updater is None or not self.updater.docker.available:
+            return
+        with contextlib.suppress(Exception):
+            inspected = await self.updater.docker.inspect(self.updater.container_id)
+            name = str(inspected.get("Name") or "").lstrip("/")
+            if name:
+                await self.updater.docker.remove(f"{name}{OLD_SUFFIX}")
+
+    async def _update_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.config.update_check_interval)
+            if not self.config.update_check or self.updater is None:
+                continue
+            try:
+                if await self.updater.check() and self.config.auto_update:
+                    LOGGER.info("A new image is published; installing it")
+                    await self.begin_update()
+            except Exception:
+                LOGGER.debug("Update check failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Updating
+    # ------------------------------------------------------------------
+    async def update_status(self) -> dict[str, object]:
+        if self.updater is None:
+            return {"canInstall": False, "state": "starting"}
+        status = await self.updater.status()
+        status.update(self._update_state)
+        status["autoUpdate"] = self.config.auto_update
+        return status
+
+    async def check_for_update(self) -> dict[str, object]:
+        if self.updater is None:
+            raise UpdateError("the bridge is still starting up")
+        await self.updater.check()
+        return await self.update_status()
+
+    async def begin_update(self) -> None:
+        """Start the handover, in the background.
+
+        In the background because the answer has to reach the browser before
+        the settings page stops existing: this container gives up its ports
+        partway through, and the page it was serving goes with them.
+        """
+        if self.updater is None:
+            raise UpdateError("the bridge is still starting up")
+        if self._update_task and not self._update_task.done():
+            raise UpdateError("an update is already under way")
+        if not self.updater.docker.available:
+            raise UpdateError(
+                "The Docker socket is not mounted into this container, so it "
+                "cannot replace itself. Add "
+                "-v /var/run/docker.sock:/var/run/docker.sock to the docker run "
+                "line and start it again."
+            )
+        self._update_state = {"state": "installing", "message": "Pulling the new image"}
+        self._update_task = asyncio.create_task(self._run_update(), name="update")
+
+    async def _run_update(self) -> None:
+        try:
+            message = await self.updater.install(before_start=self._release)
+        except Exception as exc:
+            LOGGER.error("Update failed: %s", exc)
+            self._update_state = {"state": "failed", "message": str(exc)}
+            return
+        LOGGER.info("%s", message)
+        self._update_state = {"state": "done", "message": message}
+        # The successor has the ports now; this process has nothing left to do.
+        self.exit_requested.set()
+
+    async def _release(self) -> None:
+        """Give up every port, so the new container can take them."""
+        LOGGER.info("Standing down so the new container can take over")
+        await self.stop()
+
     async def _publish_room(self, player: RoomPlayer) -> None:
         if not self.account or not self.identity.linked:
             return
@@ -565,6 +657,7 @@ class Bridge:
             },
             "settings": self.settings.current(),
             "overridden": sorted(self.config.overridden),
+            "update": await self.update_status(),
             "rooms": rooms,
         }
         payload["roomsHtml"] = settings_web.rooms_html(payload)

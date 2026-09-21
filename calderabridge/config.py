@@ -21,7 +21,7 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 
 BRIDGE_NAME = "Caldera Sonos Bridge"
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.1.1"
 
 # Stable namespace so a given Sonos player always maps to the same Plex machine
 # identifier, across restarts and reinstalls.  Plex clients remember a player by
@@ -73,6 +73,7 @@ EDITABLE = (
     "discovery_interval",
     "topology_interval",
     "poll_interval",
+    "auto_update",
 )
 
 #: How a track reaches the speaker.  ``original`` hands Sonos the file as Plex
@@ -169,6 +170,11 @@ class Config:
     http_timeout: float = 10.0
     timeline_interval: float = 1.0
 
+    # Updates --------------------------------------------------------------
+    update_check: bool = True
+    auto_update: bool = False
+    update_check_interval: float = 21600.0  # six hours
+
     # Misc -----------------------------------------------------------------
     log_level: str = "INFO"
 
@@ -207,6 +213,9 @@ class Config:
             sonos_sub_timeout=_int("SONOS_SUB_TIMEOUT", 600),
             http_timeout=_float("HTTP_TIMEOUT", 10.0),
             timeline_interval=_float("TIMELINE_INTERVAL", 1.0),
+            update_check=_bool("UPDATE_CHECK", True),
+            auto_update=_bool("AUTO_UPDATE", False),
+            update_check_interval=_float("UPDATE_CHECK_INTERVAL", 21600.0),
             log_level=_str("LOG_LEVEL", "INFO").strip().upper(),
         )
 
