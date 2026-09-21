@@ -158,6 +158,34 @@ async def test_art_url_asks_the_server_to_resize(plex_client):
     assert plex_client.art_url(PlexServer(), track) == ""
 
 
+async def test_the_art_url_names_the_image_once_not_twice(plex_client):
+    from urllib.parse import parse_qs, urlparse
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    query = parse_qs(urlparse(plex_client.art_url(server, track)).query)
+
+    # Encoded here as well as in the query string, the server is handed a path
+    # with %2F where the slashes should be. It resolves to nothing, and the
+    # Sonos app shows every other detail of the track but no cover.
+    assert query["url"] == [track.thumb]
+    assert query["X-Plex-Token"] == ["tok"]
+
+
+async def test_art_is_carried_into_the_metadata_sonos_is_given(plex_client):
+    from calderabridge import didl
+
+    server = PlexServer(address="10.0.0.5", token="tok")
+    track = parse_play_queue(play_queue_xml(1)).tracks[0]
+    art = plex_client.art_url(server, track)
+
+    meta = didl.parse(didl.build("http://x/y.flac", didl.TrackMetadata(album_art_uri=art)))
+
+    # The "&" between parameters has to survive being put inside XML, or the
+    # app is handed a URL that stops at the first one.
+    assert meta.album_art_uri == art
+
+
 async def test_play_queue_is_fetched_with_a_window(plex_client, fake_plex):
     queue = await plex_client.play_queue(fake_plex.server(), "/playQueues/4823?own=1")
     assert len(queue.tracks) == 3
