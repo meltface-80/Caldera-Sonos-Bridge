@@ -578,3 +578,80 @@ async def test_a_file_within_the_ceiling_is_never_probed(player, fake_sonos, fak
     await player.play_media(play_params(fake_plex))
     # Nothing to check: the stored file is handed over as it is.
     assert not [r for r in fake_plex.requests if "transcode" in r]
+
+
+# ----------------------------------------------------------------------
+# A play queue that leaves the file details out
+# ----------------------------------------------------------------------
+async def test_a_queue_without_parts_still_plays_the_stored_files(
+    player, fake_sonos, fake_plex
+):
+    # Some servers answer a play queue with no Media or Part. Without them
+    # every track looks like one that has to be transcoded, whatever it is.
+    fake_plex.bare_queue = True
+    await player.play_media(play_params(fake_plex))
+
+    assert fake_sonos.queue, "the tracks should still play"
+    for uri, _ in fake_sonos.queue:
+        assert "/library/parts/" in uri, "should be the stored file, not a transcode"
+        assert "/transcode/" not in uri
+
+
+async def test_the_missing_details_are_fetched_once_per_track(player, fake_plex):
+    fake_plex.bare_queue = True
+    await player.play_media(play_params(fake_plex))
+
+    lookups = [r for r in fake_plex.requests if "/library/metadata/" in r]
+    assert lookups, "the details have to come from somewhere"
+    # Asked for again on the next play, they come from memory.
+    before = len(lookups)
+    await player.play_media(play_params(fake_plex))
+    after = len([r for r in fake_plex.requests if "/library/metadata/" in r])
+    assert after == before
+
+
+async def test_a_hi_res_track_is_still_transcoded_when_details_arrive_late(
+    config, zone, fake_sonos, plex_client, fake_plex
+):
+    from .conftest import StubTopology
+
+    fake_plex.bare_queue = True
+    fake_plex.track_kwargs = {"sample_rate": 192000, "bit_depth": 24}
+    player = RoomPlayer(
+        config, zone, StubTopology({zone.uid: zone}), fake_sonos, plex_client, 32701
+    )
+    await player.play_media(play_params(fake_plex))
+
+    # The fetched details say 24/192, so the ceiling still applies.
+    for uri, _ in fake_sonos.queue:
+        assert "/transcode/" in uri
+
+
+async def test_the_reason_a_track_is_transcoded_is_stated(player):
+    from calderabridge.plexapi import PlexTrack
+
+    assert "no file" in player._why_not_native(PlexTrack(rating_key="1"))
+    assert "above what Sonos takes" in player._why_not_native(
+        PlexTrack(part_key="/p/1.flac", container="flac", sample_rate=192000)
+    )
+    assert "dsf" in player._why_not_native(
+        PlexTrack(part_key="/p/1.dsf", container="dsf")
+    )
+
+
+async def test_the_probe_identifies_itself_to_plex(
+    config, zone, fake_sonos, plex_client, fake_plex
+):
+    from .conftest import StubTopology
+
+    fake_plex.track_kwargs = {"sample_rate": 192000, "bit_depth": 24}
+    player = RoomPlayer(
+        config, zone, StubTopology({zone.uid: zone}), fake_sonos, plex_client, 32701
+    )
+    await player.play_media(play_params(fake_plex))
+
+    # The transcoder identifies the client it transcodes for; a request
+    # carrying none of the Plex headers is refused, which looks from here
+    # exactly like a server that cannot transcode at all.
+    assert fake_plex.probe_headers
+    assert fake_plex.probe_headers[0].get("X-Plex-Client-Identifier")

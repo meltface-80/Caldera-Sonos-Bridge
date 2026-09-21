@@ -159,6 +159,12 @@ class PlexServer:
         return f"{self.base_url}{path}{joiner}{urlencode(query)}"
 
 
+#: How long to wait for a transcode to produce its first byte.  A session has
+#: to start before there is anything to serve, and on a small machine that is
+#: not instant; treating slow as broken sends the speaker to the fallback for
+#: no reason.
+PREFLIGHT_TIMEOUT = 20.0
+
 #: What a hi-res track falls back to when the server will not serve lossless.
 #: High enough that the resample, not the codec, is the audible limit.
 MP3_FALLBACK_KBPS = 320
@@ -353,6 +359,8 @@ class PlexClient:
         # and only for the media server - plex.tv stays verified either way.
         self._ssl = None if verify_ssl else False
         self._routes: dict[str, PlexServer] = {}
+        #: File details fetched for tracks whose play queue entry lacked them.
+        self._parts: dict[str, PlexTrack] = {}
         #: Why the last request failed, for the settings page to show.
         self.last_error = ""
 
@@ -568,24 +576,77 @@ class PlexClient:
         suffix = "flac" if codec == "flac" else "mp3"
         return server.url(f"/music/:/transcode/universal/start.{suffix}", **params)
 
-    async def playable(self, url: str) -> bool:
+    async def playable(self, url: str, client_id: str = "") -> bool:
         """Will this URL actually serve audio?
 
         Only used to check a transcode before a speaker is sent to it: Sonos
         reports a failed fetch as a bare stop, which is indistinguishable from
-        the end of a track, so it is worth one cheap request to find out here.
+        the end of a track, so it is worth one request to find out here.
+
+        The Plex headers are not optional.  The transcoder identifies the
+        client it is transcoding *for*, and a request carrying none of them is
+        refused - which reads, from here, exactly like a server that cannot
+        transcode at all.  The wait is generous for the same reason: a
+        transcode session has to start before it has a byte to give, and on a
+        Pi that is not instant.
         """
+        headers = {
+            "X-Plex-Client-Identifier": client_id or "caldera-sonos-bridge",
+            "X-Plex-Product": "Caldera Sonos Bridge",
+            "X-Plex-Platform": "Linux",
+            "X-Plex-Device": "Sonos",
+        }
         try:
             async with self._session.get(
                 url,
-                headers={"Range": "bytes=0-1"},
+                headers=headers,
                 ssl=self._ssl,
-                timeout=aiohttp.ClientTimeout(total=6.0),
+                timeout=aiohttp.ClientTimeout(total=PREFLIGHT_TIMEOUT),
             ) as response:
-                return response.status in (200, 206)
+                if response.status in (200, 206):
+                    return True
+                body = (await response.text())[:200].strip()
+                LOGGER.info(
+                    "Plex would not serve %s: HTTP %s %s",
+                    _loggable_url(url),
+                    response.status,
+                    body or "(no body)",
+                )
+                return False
         except (TimeoutError, aiohttp.ClientError, OSError) as exc:
-            LOGGER.debug("Transcode pre-flight failed: %s", exc)
+            LOGGER.info("Plex would not serve %s: %s", _loggable_url(url), exc)
             return False
+
+    async def fill_part(
+        self, server: PlexServer, track: PlexTrack, client_id: str = ""
+    ) -> PlexTrack:
+        """Fetch the file details a play queue left out.
+
+        A play queue does not always carry the Media and Part for its tracks,
+        and without a Part there is no file to hand a speaker - so every track
+        looks like one that has to be transcoded, whatever it actually is.
+        The metadata for the item has them, so ask for that instead of
+        assuming the worst about a library that is very likely fine.
+        """
+        if track.part_key or not track.rating_key:
+            return track
+        cached = self._parts.get(track.rating_key)
+        if cached is None:
+            queue = await self.metadata(
+                server, track.key or f"/library/metadata/{track.rating_key}", client_id
+            )
+            cached = queue.tracks[0] if queue.tracks else PlexTrack()
+            self._parts[track.rating_key] = cached
+        if not cached.part_key:
+            return track
+
+        track.part_key = cached.part_key
+        track.container = cached.container or track.container
+        track.codec = cached.codec or track.codec
+        track.sample_rate = cached.sample_rate or track.sample_rate
+        track.bit_depth = cached.bit_depth or track.bit_depth
+        track.duration_ms = track.duration_ms or cached.duration_ms
+        return track
 
     def art_url(self, server: PlexServer, track: PlexTrack, size: int = 300) -> str:
         """Album art, resized by the server so a speaker is not sent a 4000px JPEG."""

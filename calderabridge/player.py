@@ -432,6 +432,11 @@ class RoomPlayer:
         indistinguishable from the track having ended, so a transcode the
         server will not actually serve would look exactly like silent success.
         """
+        # A play queue does not always carry the file details for its tracks.
+        # Without them every track looks like one that has to be transcoded,
+        # whatever it actually is, so fetch them before deciding anything.
+        await self._plex.fill_part(self.server, track, self.machine_identifier)
+
         candidates = self._plex.stream_candidates(
             self.server,
             track,
@@ -439,10 +444,18 @@ class RoomPlayer:
             self.config.max_bitrate_kbps,
             self._session_id,
         )
+        if candidates[0].transcoded and self.config.stream_format == "original":
+            LOGGER.info(
+                "%s: %r is %s, so it is transcoded rather than sent as stored",
+                self.zone.name,
+                track.title,
+                self._why_not_native(track),
+            )
+
         for index, choice in enumerate(candidates):
             if not choice.transcoded:
                 return choice.url, self._metadata(choice.url, track, choice.mime)
-            if await self._plex.playable(choice.probe_url):
+            if await self._plex.playable(choice.probe_url, self.machine_identifier):
                 if index:
                     LOGGER.info(
                         "%s: the server would not serve %s for %r, using %s",
@@ -464,6 +477,17 @@ class RoomPlayer:
             last.label,
         )
         return last.url, self._metadata(last.url, track, last.mime)
+
+    @staticmethod
+    def _why_not_native(track: PlexTrack) -> str:
+        """Why a track is being transcoded, in the terms that decided it."""
+        if not track.part_key:
+            return "a track Plex gave no file for"
+        if track.too_high_resolution:
+            rate = track.sample_rate or "?"
+            depth = track.bit_depth or "?"
+            return f"{depth}-bit/{rate} Hz, above what Sonos takes"
+        return f"a {track.container or 'unknown'} file, which Sonos does not play"
 
     def _metadata(self, uri: str, track: PlexTrack, mime: str = "") -> str:
         meta = didl.TrackMetadata(
