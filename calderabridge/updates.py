@@ -73,13 +73,49 @@ class Docker:
 
     @property
     def available(self) -> bool:
-        return Path(self.socket_path).exists()
+        """Can this container actually use the socket?
+
+        Mounted is not the same as usable.  The bridge runs as an unprivileged
+        user and the socket is owned by root and the ``docker`` group, so a
+        plain mount leaves it readable by nobody here.  Anything else would
+        offer a button that cannot work.
+        """
+        return not self.obstacle
+
+    @property
+    def obstacle(self) -> str:
+        """Why the socket cannot be used, in terms of what to do about it."""
+        path = Path(self.socket_path)
+        if not path.exists():
+            return (
+                "The Docker socket is not mounted into this container, so it can "
+                "tell you about updates but cannot install one. Add "
+                f"-v {self.socket_path}:{self.socket_path} to the docker run line."
+            )
+        if os.access(self.socket_path, os.R_OK | os.W_OK):
+            return ""
+
+        # Mounted but unreadable, which is the ordinary result of mounting it
+        # into a container that does not run as root.  The socket itself says
+        # which group would fix it, so say that rather than "permission denied".
+        try:
+            gid = os.stat(self.socket_path).st_gid
+        except OSError:  # pragma: no cover - the stat cannot fail after exists()
+            return (
+                f"The Docker socket at {self.socket_path} cannot be read by this "
+                "container."
+            )
+        return (
+            f"The Docker socket is mounted, but this container runs as uid "
+            f"{os.getuid()} and the socket belongs to group {gid}, so it cannot be "
+            f"used. Add --group-add {gid} to the docker run line."
+        )
 
     async def _request(
         self, method: str, path: str, payload: object = None, timeout: float = 600.0
     ) -> tuple[int, object]:
         if not self.available:
-            raise UpdateError("the Docker socket is not mounted into this container")
+            raise UpdateError(self.obstacle)
         connector = aiohttp.UnixConnector(path=self.socket_path)
         try:
             async with aiohttp.ClientSession(connector=connector) as session:
@@ -256,10 +292,7 @@ class Updater:
             "error": self.last_error,
         }
         if not self.docker.available:
-            state["reason"] = (
-                "The Docker socket is not mounted, so the bridge can tell you about "
-                "updates but cannot install one."
-            )
+            state["reason"] = self.docker.obstacle
         if not self.container_id:
             return state
 
@@ -318,10 +351,7 @@ class Updater:
         all - is settled while this one is still serving.
         """
         if not self.docker.available:
-            raise UpdateError(
-                "The Docker socket is not mounted into this container, so it cannot "
-                "replace itself. Add -v /var/run/docker.sock:/var/run/docker.sock."
-            )
+            raise UpdateError(self.docker.obstacle)
         if not self.container_id:
             raise UpdateError("Cannot tell which container this is")
 

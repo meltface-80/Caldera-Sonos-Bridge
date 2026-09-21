@@ -303,16 +303,31 @@
   <div class="wrap">
     <h2>Install with Docker</h2>
     <p class="lead">On an always-on Linux machine on the same network as your speakers &mdash;
-       a NAS, a Raspberry Pi, a home server.</p>
+       a NAS, a Raspberry Pi, a home server. The same paste works for a fresh install and for
+       starting over: it clears away an existing container and image first.</p>
 
     <div class="out">
       <div class="codebox">
         <button class="copy-btn" id="copy">Copy</button>
-<pre id="cmd">docker run -d \
+<pre id="cmd"><span class="c"># Stop and remove any existing container</span>
+docker stop caldera-sonos-bridge 2&gt;/dev/null
+docker rm caldera-sonos-bridge 2&gt;/dev/null
+
+<span class="c"># Purge old images</span>
+docker rmi caldera-sonos-bridge:local 2&gt;/dev/null
+docker rmi ghcr.io/meltface-80/caldera-sonos-bridge:latest 2&gt;/dev/null
+docker image prune <span class="k">-f</span>
+
+<span class="c"># Pull and run</span>
+docker pull ghcr.io/meltface-80/caldera-sonos-bridge:latest
+
+docker run -d \
   <span class="k">--name</span> caldera-sonos-bridge \
   <span class="k">--network</span> host \
   <span class="k">--restart</span> unless-stopped \
   <span class="k">-v</span> caldera-sonos:/config \
+  <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
+  <span class="k">--group-add</span> "$(getent group docker | cut -d: -f3)" \
   ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
       </div>
 
@@ -323,8 +338,20 @@
       </div>
 
       <div class="note">
-        <b>Keep the volume.</b> <code>/config</code> holds your Plex token, your settings and the
-        port each room was given. Without it you re-link after every image pull.
+        <b>The two socket lines are optional, and come as a pair.</b> They are what let the bridge
+        <a href="#updates">update itself</a> from the settings page, and access to the Docker socket
+        is effectively root on the host. Drop both if you would rather not &mdash; everything else
+        works the same, and the page will still tell you when an update exists.
+        The bridge runs as an unprivileged user, so the mount on its own leaves it a socket it
+        cannot read; <code>--group-add</code> puts the container in the host's <code>docker</code>
+        group, and the <code>getent</code> call reads that group's number off the host.
+      </div>
+
+      <div class="note">
+        <b>The config volume is deliberately kept.</b> <code>/config</code> holds your Plex token,
+        your settings and the port each room was given, so the block above is a swap rather than a
+        fresh start. To genuinely start over add <code>docker volume rm caldera-sonos</code> after
+        the container is removed, and expect to link to Plex again.
       </div>
     </div>
 
@@ -350,22 +377,19 @@
        published &mdash; and installs it. No shell, no re-running the docker run line.</p>
 
     <div class="out">
-      <div class="codebox">
-        <button class="copy-btn" id="copy2">Copy</button>
-<pre id="cmd2">docker run -d \
-  <span class="k">--name</span> caldera-sonos-bridge \
-  <span class="k">--network</span> host \
-  <span class="k">--restart</span> unless-stopped \
-  <span class="k">-v</span> caldera-sonos:/config \
-  <span class="k">-v</span> /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/meltface-80/caldera-sonos-bridge:latest</pre>
+      <div class="note">
+        <b>This needs the Docker socket</b> &mdash; a container can only replace itself if it can
+        talk to Docker. That is the <code>-v /var/run/docker.sock:/var/run/docker.sock</code> and
+        <code>--group-add</code> lines in the <a href="#install">install command</a>, and both are
+        needed: the bridge does not run as root, so the mount alone gives it a socket it cannot
+        read. If either is missing the Updates card says which, and names the group number to add.
+        Re-run the install block with both lines, once, and you should not need a shell again.
       </div>
 
       <div class="note">
-        <b>Weigh that up.</b> The extra mount is what lets the container replace itself, and access
-        to the Docker socket is effectively root on the host. It is not in the default command for
-        that reason. Without it the bridge still tells you an update exists; it just cannot install
-        one, and the page says so rather than offering a button that would fail.
+        <b>Weigh it up.</b> Access to the Docker socket is effectively root on the host. Without it
+        the bridge still tells you an update exists; it just cannot install one, and the page says
+        so rather than offering a button that would fail.
       </div>
     </div>
 

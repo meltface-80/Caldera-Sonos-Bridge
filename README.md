@@ -38,30 +38,57 @@ dietpi-software install 162              # DietPi (162 is its Docker package)
 curl -fsSL https://get.docker.com | sh   # Debian, Ubuntu, Raspberry Pi OS
 ```
 
-Then start the bridge:
+Then install the bridge. This block is safe to run whether or not anything is installed yet — it
+clears away an existing container and image first, so the same paste works for a fresh install and
+for starting over:
 
 ```bash
+# Stop and remove any existing container
+docker stop caldera-sonos-bridge 2>/dev/null
+docker rm caldera-sonos-bridge 2>/dev/null
+
+# Purge old images
+docker rmi caldera-sonos-bridge:local 2>/dev/null
+docker rmi ghcr.io/meltface-80/caldera-sonos-bridge:latest 2>/dev/null
+docker image prune -f
+
+# Pull and run
+docker pull ghcr.io/meltface-80/caldera-sonos-bridge:latest
+
 docker run -d \
   --name caldera-sonos-bridge \
   --network host \
   --restart unless-stopped \
   -v caldera-sonos:/config \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(getent group docker | cut -d: -f3)" \
   ghcr.io/meltface-80/caldera-sonos-bridge:latest
 ```
-
-That is the whole installation. Then:
-
-1. Open `http://<host-ip>:32700/` — the settings page lists the Sonos rooms it has found.
-2. Click **Link a Plex account** and enter the four-character code at
-   [plex.tv/link](https://plex.tv/link).
-3. Open Plexamp. Your rooms are in the list of things to play to.
 
 > **`--network host` is required.** Plex finds players by multicast, and multicast does not cross
 > Docker's default bridge network. It is also how the bridge finds your speakers. Docker Desktop
 > for macOS and Windows has no real host networking, so this needs a Linux host.
 
-> **Keep the volume.** `/config` holds your Plex token, your settings and the port each room was
-> given. Without it you re-link after every image pull.
+> **The socket lines are optional, and not a small thing to grant.** They are what let the bridge
+> [update itself](#updates) from the settings page, and access to the Docker socket is effectively
+> root on the host. Drop both if you would rather not: everything else works the same, and the page
+> will still tell you when an update exists — it just cannot install one.
+>
+> They come as a pair. The bridge runs as an unprivileged user, so mounting the socket alone leaves
+> it unreadable; `--group-add` puts the container in the host's `docker` group, which is what makes
+> the mount usable. The `getent` call reads that group's number off the host.
+
+The config volume is deliberately *not* removed above. `/config` holds your Plex token, your
+settings and the port each room was given, so keeping it makes this a swap rather than a fresh
+start. To genuinely start over, add `docker volume rm caldera-sonos` after the container is
+removed, and expect to link to Plex again.
+
+Then:
+
+1. Open `http://<host-ip>:32700/` — the settings page lists the Sonos rooms it has found.
+2. Click **Link a Plex account** and enter the four-character code at
+   [plex.tv/link](https://plex.tv/link).
+3. Open Plexamp. Your rooms are in the list of things to play to.
 
 Linking is only needed for **Plexamp on a phone**, which finds players through your Plex account
 rather than over the network. Desktop Plexamp and Plex Web find the rooms without it. Either way,
@@ -72,22 +99,24 @@ playback goes straight to the bridge over your own network — nothing streams t
 The settings page says which version is running and whether a newer image has been published, and
 will install it — no shell, no re-running the `docker run` line.
 
-Installing needs one addition to that line, because a container can only replace itself if it can
-talk to Docker:
+This needs the Docker socket, because a container can only replace itself if it can talk to Docker.
+That is these two lines from the install command above:
 
 ```bash
-docker run -d \
-  --name caldera-sonos-bridge \
-  --network host \
-  --restart unless-stopped \
-  -v caldera-sonos:/config \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/meltface-80/caldera-sonos-bridge:latest
+  --group-add "$(getent group docker | cut -d: -f3)" \
 ```
 
-> **Weigh that up.** Access to the Docker socket is effectively root on the host. It is not in the
-> default command for that reason. Without it the bridge still *tells* you an update exists; it
-> just cannot install one, and the page says so rather than offering a button that would fail.
+Both are needed. The bridge does not run as root, so the mount on its own gives it a socket it
+cannot read; `--group-add` puts it in the group that owns the socket. If either is missing the
+Updates card says exactly which, and names the group number to add.
+
+If you installed without them, re-run the install block with both lines — once — and you should not
+need a shell for this again.
+
+> **Weigh it up.** Access to the Docker socket is effectively root on the host. Without it the
+> bridge still *tells* you an update exists; it just cannot install one, and the page says so
+> rather than offering a button that would fail.
 
 Pressing **Install update** pulls the new image, builds a container from your existing one's exact
 configuration, hands over the ports and exits. Your settings, Plex link and room ports live in the

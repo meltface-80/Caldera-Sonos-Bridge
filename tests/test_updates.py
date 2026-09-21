@@ -325,3 +325,57 @@ async def test_status_without_a_socket_says_so(tmp_path):
         status = await updater.status()
         assert status["canInstall"] is False
         assert "Docker socket" in str(status["reason"])
+
+
+# ----------------------------------------------------------------------
+# Mounted is not the same as usable
+# ----------------------------------------------------------------------
+def test_a_missing_socket_says_what_to_mount(tmp_path):
+    sock = tmp_path / "absent.sock"
+    docker = Docker(str(sock))
+    assert not docker.available
+    # The remedy, spelled out as the mount that would fix it.
+    assert f"-v {sock}:{sock}" in docker.obstacle
+
+
+def test_a_socket_the_container_cannot_read_names_the_group(tmp_path, monkeypatch):
+    # The ordinary result of mounting the socket into a container that does not
+    # run as root: it is there, and it is unreadable.
+    sock = tmp_path / "docker.sock"
+    sock.write_text("")
+
+    monkeypatch.setattr("calderabridge.updates.os.access", lambda *a, **k: False)
+    monkeypatch.setattr("calderabridge.updates.os.getuid", lambda: 10001)
+
+    class Stat:
+        st_gid = 998
+
+    monkeypatch.setattr("calderabridge.updates.os.stat", lambda *a, **k: Stat())
+
+    docker = Docker(str(sock))
+    assert not docker.available
+    # "Permission denied" is not an instruction; the group number is.
+    assert "--group-add 998" in docker.obstacle
+    assert "uid 10001" in docker.obstacle
+
+
+async def test_installing_over_an_unusable_socket_says_how_to_fix_it(
+    tmp_path, monkeypatch
+):
+    sock = tmp_path / "docker.sock"
+    sock.write_text("")
+    monkeypatch.setattr("calderabridge.updates.os.access", lambda *a, **k: False)
+
+    class Stat:
+        st_gid = 998
+
+    monkeypatch.setattr("calderabridge.updates.os.stat", lambda *a, **k: Stat())
+
+    async with aiohttp.ClientSession() as session:
+        updater = Updater(session, docker=Docker(str(sock)), container_id="x")
+        with pytest.raises(UpdateError, match="--group-add 998"):
+            await updater.install()
+
+        status = await updater.status()
+        assert status["canInstall"] is False
+        assert "--group-add 998" in str(status["reason"])
