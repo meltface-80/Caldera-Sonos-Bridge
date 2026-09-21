@@ -19,9 +19,9 @@ rest. Pick one, and your Plex library plays on that speaker.
 
 Plex used to play to Sonos itself. As of a few days ago it stopped.
 
-The official integration — the one you set up through your Plex account — no longer works, and it
-is not the only service to have dropped Sonos support recently. That left a good Plex library and a
-house full of Sonos speakers with nothing joining them.
+The official integration — the one you set up through your Plex account — is still there, but it
+stopped working here, and going by the forums it is not only here. That left a good Plex library
+and a house full of Sonos speakers with nothing joining them.
 
 This bridge is that join, and it depends on nothing outside your own network: your Plex server,
 your speakers, and a small daemon on a machine you own.
