@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """The settings page, and the small JSON API behind it.
 
 The sibling UPnP bridge serves a status page that answers "what can the bridge

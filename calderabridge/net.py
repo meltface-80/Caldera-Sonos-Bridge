@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Small networking helpers: local address discovery and multicast sockets."""
 
 from __future__ import annotations

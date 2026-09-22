@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """DIDL-Lite handling.
 
 Sonos will not play a track it was handed without metadata it recognises, and it

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Entry point: ``python -m calderabridge``, and ``--login``."""
 
 from __future__ import annotations

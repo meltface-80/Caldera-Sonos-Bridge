@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """GDM: the multicast answer that puts each room in a client's cast list."""
 
 from __future__ import annotations

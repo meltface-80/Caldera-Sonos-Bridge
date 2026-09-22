@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Updating the bridge from its own settings page.
 
 Merging a change is not the end of it: someone still has to reach the machine

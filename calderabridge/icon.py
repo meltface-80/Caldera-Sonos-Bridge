@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Device icons, drawn at start-up rather than shipped as binary assets.
 
 The settings page shows each room's icon next to its name.

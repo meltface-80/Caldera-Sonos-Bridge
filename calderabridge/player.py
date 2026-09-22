@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """One Sonos room, presented to Plex as a player.
 
 This is where the two halves meet.  A controller - Plexamp, Plex for iOS, the

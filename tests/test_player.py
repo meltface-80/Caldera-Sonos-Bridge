@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Turning Plex commands into Sonos actions, and Sonos state into timelines."""
 
 from __future__ import annotations

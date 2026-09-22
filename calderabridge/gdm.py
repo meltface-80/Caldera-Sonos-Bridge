@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """GDM: how Plex clients on the LAN find the rooms.
 
 GDM is Plex's own flavour of SSDP - a multicast search on 239.0.0.250, answered
