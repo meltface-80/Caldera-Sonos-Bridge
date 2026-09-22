@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Shared test doubles: a simulated Sonos player and a simulated Plex server."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """An HTTP server that impersonates a Sonos ZonePlayer closely enough to drive
 the real bridge end to end - same paths, same SOAP dialect, same port 1400."""
 

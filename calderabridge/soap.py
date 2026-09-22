@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """SOAP envelope building/parsing plus a tiny async SOAP client for Sonos."""
 
 from __future__ import annotations

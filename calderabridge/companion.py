@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """The Plex Companion surface: what a Plex controller talks to.
 
 A Plex player is a smaller thing than it sounds - a device that announces itself

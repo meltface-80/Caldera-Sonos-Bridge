@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Configuration: environment defaults, the settings file laid over them."""
 
 from __future__ import annotations

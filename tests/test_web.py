@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """The settings page on port 32700: what it shows and what it saves."""
 
 from __future__ import annotations

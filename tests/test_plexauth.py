@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Linking to a Plex account, and keeping the token once linked."""
 
 from __future__ import annotations

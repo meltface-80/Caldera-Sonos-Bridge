@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """The whole bridge, end to end.
 
 A real :class:`Bridge` is started against a simulated Sonos household and a

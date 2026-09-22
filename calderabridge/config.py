@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Runtime configuration.
 
 Two sources feed one :class:`Config`.  The environment supplies the defaults, as

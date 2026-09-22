@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Device drawings for every Sonos model the bridge knows about.
 
 Each speaker is described as the face you look at plus the depth it stands in,

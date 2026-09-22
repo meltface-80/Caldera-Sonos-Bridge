@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Wiring: Sonos discovery, one Plex player per room, GDM, and the settings page.
 
 The bridge holds no audio path at all.  It discovers the Sonos household, gives

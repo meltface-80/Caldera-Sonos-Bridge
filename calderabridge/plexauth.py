@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Linking the bridge to a Plex account, and keeping the rooms visible there.
 
 Caldera headless is linked once with ``caldera-music --login``; this does the

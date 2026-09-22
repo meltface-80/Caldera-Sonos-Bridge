@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Talking to a Plex Media Server: play queues, stream URLs, timelines.
 
 The bridge never carries audio.  It asks the server what is in a play queue,

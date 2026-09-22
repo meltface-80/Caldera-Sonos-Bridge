@@ -255,6 +255,15 @@ the same job for Audirvana and anything else that speaks plain UPnP.
 The site under `docs/` is published with GitHub Pages: **Settings → Pages → Source: Deploy from a
 branch → `main` / `/docs`**.
 
-## License
+## Licence
 
-GPL-3.0 — see [LICENSE](LICENSE). Not affiliated with Sonos, Inc., Plex GmbH, or Caldera.
+Caldera Sonos Bridge is copyright (c) 2026 Lewis Menzies (Music Duck / MusicD).
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+Licence, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but **WITHOUT ANY WARRANTY** — without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file for the full text, or
+<https://www.gnu.org/licenses/>.
+
+Not affiliated with Sonos, Inc., Plex GmbH, or Caldera.

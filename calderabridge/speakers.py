@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Line drawings of the Sonos models the bridge can bridge.
 
 The shapes themselves come from :mod:`calderabridge.deviceicons`, where each

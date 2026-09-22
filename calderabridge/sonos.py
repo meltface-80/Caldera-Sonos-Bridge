@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
 """Talking to real Sonos players: SOAP endpoints, topology, queue handling."""
 
 from __future__ import annotations
