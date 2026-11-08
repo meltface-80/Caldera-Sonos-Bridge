@@ -417,3 +417,10 @@ async def test_auto_update_is_a_saveable_setting(client, config):
         "/settings", data={"_present_auto_update": "1"}, allow_redirects=False
     )
     assert config.auto_update is False
+
+
+async def test_the_saved_banner_escapes_what_the_query_says(client):
+    response = await client.get("/?saved=<script>alert(1)</script>")
+    body = await response.text()
+    assert "<script>alert(1)</script>" not in body
+    assert "&lt;script&gt;" in body

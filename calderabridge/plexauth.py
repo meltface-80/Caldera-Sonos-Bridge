@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -139,7 +140,10 @@ class PlexIdentity:
             "username": self.username,
         }
         temp = self.path.with_suffix(".json.tmp")
-        temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # Created private, so the token is never readable by others, even briefly.
+        descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2))
         temp.replace(self.path)
         # The token is an account credential; keep it off other users' eyes on a
         # shared host, best-effort - some config volumes will not take a chmod.

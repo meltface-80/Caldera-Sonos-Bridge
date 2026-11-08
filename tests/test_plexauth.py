@@ -310,3 +310,10 @@ async def test_unlinking_takes_the_rooms_off_the_account(account, plex_tv):
 
     assert await account.remove_all() == 2
     assert plex_tv.deleted == ["dev-1", "dev-1"]
+
+
+def test_the_token_file_is_private(tmp_path):
+    identity = PlexIdentity(Config(config_dir=str(tmp_path)))
+    identity.token = "tok-1"
+    identity.save()
+    assert (tmp_path / "plex.json").stat().st_mode & 0o077 == 0

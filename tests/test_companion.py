@@ -194,3 +194,10 @@ async def test_a_failing_command_reports_500(client, player, monkeypatch):
 
     monkeypatch.setattr(player, "play", boom)
     assert (await client.get("/player/playback/play")).status == 500
+
+
+async def test_a_command_id_cannot_break_the_timeline_xml(client):
+    response = await client.get(
+        "/player/timeline/poll", params={"commandID": 'a"><x y="'}
+    )
+    assert DET.fromstring(await response.text()).get("commandID") == 'a"><x y="'

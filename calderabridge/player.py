@@ -198,7 +198,7 @@ class RoomPlayer:
             machine_identifier=params.get("machineIdentifier", ""),
             address=params.get("address", ""),
             port=int(params.get("port") or 32400),
-            protocol=params.get("protocol") or "http",
+            protocol="https" if params.get("protocol") == "https" else "http",
             token=token,
         )
         if not server.usable:
@@ -624,7 +624,7 @@ class RoomPlayer:
         location = "fullScreenMusic" if self.state != STATE_STOPPED else "navigation"
         return (
             '<?xml version="1.0" encoding="utf-8"?>\n'
-            f'<MediaContainer commandID="{command}" location="{location}"'
+            f'<MediaContainer commandID={quoteattr(command)} location="{location}"'
             f" machineIdentifier={quoteattr(self.machine_identifier)}>"
             f"{music}{idle}</MediaContainer>"
         )

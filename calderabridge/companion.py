@@ -208,7 +208,8 @@ async def handle_subscribe(request: web.Request) -> web.Response:
 
     host = request.remote or ""
     client_id = request.headers.get("X-Plex-Client-Identifier", "")
-    request.app[SUBS_KEY].add(host, port, request.query.get("protocol", "http"), client_id)
+    protocol = "https" if request.query.get("protocol") == "https" else "http"
+    request.app[SUBS_KEY].add(host, port, protocol, client_id)
     LOGGER.info("%s: a controller at %s subscribed to timelines", player.zone.name, host)
     # The subscriber expects a timeline promptly, not at the next state change.
     asyncio.create_task(

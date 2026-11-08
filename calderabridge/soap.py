@@ -11,6 +11,8 @@ from xml.sax.saxutils import escape
 import aiohttp
 from defusedxml import ElementTree as DET
 
+from .plexapi import _loggable_url
+
 LOGGER = logging.getLogger(__name__)
 
 _REQUEST_TEMPLATE = (
@@ -182,7 +184,7 @@ class SoapClient:
             "SOAPACTION": f'"{service_type}#{action}"',
             "Connection": "close",
         }
-        LOGGER.debug("SOAP -> %s %s %s", url, action, args or {})
+        LOGGER.debug("SOAP -> %s %s %s", url, action, _loggable_url(str(args or {})))
         try:
             async with self._session.post(
                 url, data=payload.encode("utf-8"), headers=headers, timeout=self._timeout
