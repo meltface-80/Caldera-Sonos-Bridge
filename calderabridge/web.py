@@ -662,7 +662,7 @@ async def handle_page(request: web.Request) -> web.Response:
 
     banner = ""
     if "saved" in request.query:
-        count = request.query.get("saved", "0")
+        count = _esc(request.query.get("saved", "0"))
         banner = (
             f'<div class=banner>Saved. {count} setting(s) changed.</div>'
             if count != "0"
